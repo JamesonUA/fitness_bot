@@ -27,12 +27,11 @@ from telegram.ext import (
 #  НАЛАШТУВАННЯ
 # ═══════════════════════════════════════════════════════════════
 
-BOT_TOKEN      = os.environ.get("BOT_TOKEN",      "8623568533:AAEC0nfGONryCrcLQ86njVwGQMt0f1erZD4")
-ADMIN_ID       = int(os.environ.get("ADMIN_ID",   "447671579"))
-CHANNEL_ID     = os.environ.get("CHANNEL_ID",     "@Fitness_start_pro")
-
-CARD_NUMBER    = os.environ.get("CARD_NUMBER",    "0000 0000 0000 0000")
-CARD_OWNER     = os.environ.get("CARD_OWNER",     "Іванenko І.І.")
+BOT_TOKEN      = os.environ.get("BOT_TOKEN",
+ADMIN_ID       = int(os.environ.get("ADMIN_ID",
+CHANNEL_ID     = os.environ.get("CHANNEL_ID",
+CARD_NUMBER    = os.environ.get("CARD_NUMBER",
+CARD_OWNER     = os.environ.get("CARD_OWNER",
 GROUP_PRICE    = int(os.environ.get("GROUP_PRICE",    "200"))
 PERSONAL_PRICE = int(os.environ.get("PERSONAL_PRICE", "500"))
 
