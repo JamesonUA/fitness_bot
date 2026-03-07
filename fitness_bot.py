@@ -73,20 +73,18 @@ class GistStorageManager:
     Схема:
       save()  → локальний JSON (миттєво) + Gist (фоновий thread, з throttle)
       load()  → Gist → локальний JSON (резерв)
-
-    Усі три менеджери (payments, workouts, personal) використовують
-    один спільний Gist з різними файлами всередині.
     """
 
-    _gist_id: str | None = None      # спільний для всіх екземплярів
+    _gist_id: str | None = None
     _gist_lock = threading.Lock()
 
     def __init__(self, local_file: str, gist_filename: str):
         self.local_file    = local_file
-        self.gist_filename = gist_filename   # ім'я файлу всередині Gist
+        self.gist_filename = gist_filename
         self._last_upload  = 0.0
         self._pending_data = None
         self._lock         = threading.Lock()
+        self._ever_uploaded = False  # перший аплоад завжди без throttle
 
     # ── GitHub API ──
 
@@ -100,13 +98,10 @@ class GistStorageManager:
 
     @classmethod
     def _load_gist_id(cls) -> str | None:
-        """Завантажує Gist ID з локального файлу або змінної середовища."""
-        # Спочатку з env (для Railway)
         gid = os.environ.get("GIST_ID", "")
         if gid:
             cls._gist_id = gid
             return gid
-        # Потім з локального файлу
         try:
             if os.path.exists(GIST_ID_FILE):
                 v = open(GIST_ID_FILE).read().strip()
@@ -128,7 +123,6 @@ class GistStorageManager:
 
     @classmethod
     def _create_gist(cls) -> str | None:
-        """Створює новий приватний Gist, повертає gist_id."""
         if not GITHUB_TOKEN:
             logger.warning("GITHUB_TOKEN не задано — хмарний бекап вимкнено")
             return None
@@ -159,7 +153,6 @@ class GistStorageManager:
 
     @classmethod
     def _ensure_gist(cls) -> str | None:
-        """Повертає gist_id, створюючи Gist якщо потрібно."""
         with cls._gist_lock:
             if cls._gist_id:
                 return cls._gist_id
@@ -169,7 +162,6 @@ class GistStorageManager:
             return cls._create_gist()
 
     def _download_from_gist(self) -> dict | None:
-        """Завантажує файл із Gist."""
         gist_id = self._ensure_gist()
         if not gist_id or not GITHUB_TOKEN:
             return None
@@ -180,23 +172,25 @@ class GistStorageManager:
                 timeout=30,
             )
             if resp.status_code != 200:
-                logger.error(f"Gist get: {resp.status_code}")
+                logger.error(f"Gist get [{self.gist_filename}]: {resp.status_code}")
                 return None
             files = resp.json().get("files", {})
             f = files.get(self.gist_filename)
             if not f:
+                logger.warning(f"[{self.gist_filename}] відсутній у Gist")
                 return None
             content = f.get("content", "{}")
             data = json.loads(content)
-            if data:
-                logger.info(f"[{self.gist_filename}] ← Gist OK")
-            return data if data else None
+            # Порожній dict {} — це валідні дані (просто ще нічого немає)
+            if isinstance(data, dict):
+                logger.info(f"[{self.gist_filename}] ← Gist OK ({len(data)} ключів)")
+                return data
+            return None
         except Exception as e:
             logger.error(f"Gist download [{self.gist_filename}]: {e}")
         return None
 
     def _upload_to_gist(self, data: dict):
-        """Оновлює файл у Gist."""
         gist_id = self._ensure_gist()
         if not gist_id or not GITHUB_TOKEN:
             return
@@ -211,27 +205,29 @@ class GistStorageManager:
             if resp.status_code == 200:
                 logger.info(f"[{self.gist_filename}] → Gist OK")
             else:
-                logger.error(f"Gist update [{self.gist_filename}]: {resp.status_code}")
+                logger.error(f"Gist update [{self.gist_filename}]: {resp.status_code} {resp.text[:200]}")
         except Exception as e:
             logger.error(f"Gist upload [{self.gist_filename}]: {e}")
 
     def _throttled_upload(self, data: dict):
-        """Завантажує тільки якщо пройшов throttle-інтервал."""
         with self._lock:
             now = _time.time()
-            if now - self._last_upload < BACKUP_THROTTLE_SEC:
+            # Перший аплоад — завжди одразу (без throttle)
+            if self._ever_uploaded and now - self._last_upload < BACKUP_THROTTLE_SEC:
                 self._pending_data = data
                 return
             self._last_upload = now
             self._pending_data = None
+            self._ever_uploaded = True
         self._upload_to_gist(data)
 
     # ── Публічні методи ──
 
     def load_raw(self) -> dict | None:
-        """Завантажує дані: Gist → локальний файл (резерв)."""
+        # 1. Gist (основне джерело)
         data = self._download_from_gist()
 
+        # 2. Локальний файл (резерв, наприклад якщо GitHub недоступний)
         if data is None and os.path.exists(self.local_file):
             try:
                 with open(self.local_file, "r", encoding="utf-8") as f:
@@ -243,7 +239,6 @@ class GistStorageManager:
         return data
 
     def save_raw(self, data: dict):
-        """Зберігає: локально миттєво + Gist у фоні з throttle."""
         # 1. Локально — завжди, миттєво
         try:
             with open(self.local_file, "w", encoding="utf-8") as f:
@@ -251,12 +246,11 @@ class GistStorageManager:
         except Exception as e:
             logger.error(f"Локальне збереження [{self.gist_filename}]: {e}")
 
-        # 2. Gist — у фоні, з throttle
-        data_copy = dict(data)
+        # 2. Gist — у фоні, з throttle (перший раз — одразу)
+        data_copy = json.loads(json.dumps(data, ensure_ascii=False))  # deep copy
         threading.Thread(target=self._throttled_upload, args=(data_copy,), daemon=True).start()
 
     def flush_pending(self):
-        """Примусово завантажує pending-дані."""
         with self._lock:
             data = self._pending_data
             if data is None:
@@ -1740,7 +1734,18 @@ def run_health_server():
     HTTPServer(("0.0.0.0", port), HealthHandler).serve_forever()
 
 def main():
+    # Діагностика storage
+    if not GITHUB_TOKEN:
+        logger.warning("⚠️ GITHUB_TOKEN не задано! Дані зберігаються ТІЛЬКИ локально і ЗНИКНУТЬ при рестарті!")
+    else:
+        gist_id = os.environ.get("GIST_ID", "")
+        logger.info(f"GitHub Gist storage: token=✅, GIST_ID={'✅ ' + gist_id[:8] + '...' if gist_id else '❌ (буде створено автоматично)'}")
+
     pay.load(); wm.load(); pm.load()
+
+    logger.info(f"Завантажено: клієнтів={len(pay.payments)}, "
+                f"групових={len(wm.workouts)}, персональних={len(pm.slots)}")
+
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("add_workout", cmd_add_workout))
