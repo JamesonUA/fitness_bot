@@ -1656,18 +1656,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def notification_loop(app: Application):
     while True:
         try:
+            # ── Групові тренування ──
             for workout, ntype in wm.get_pending_notifications():
                 ids = pay.get_paid_workout_ids(workout["id"])
                 if not ids: continue
                 dt = datetime.fromisoformat(workout["datetime"])
                 if dt.tzinfo is None: dt = dt.replace(tzinfo=TIMEZONE)
                 if ntype == "1h":
-                    txt = (f"⏰ <b>Групове тренування через 1 годину!</b>\n\n🏋️ <b>{workout['title']}</b>\n"
-                           f"📅 {dt.strftime('%d.%m.%Y о %H:%M')}\n\n"
-                           f"🔗 <a href=\"{workout['teams_link']}\">Google Meet</a>\n\nГотуйтеся! 💪")
+                    txt = (
+                        f"🔔 <b>Через годину — час тренування!</b>\n\n"
+                        f"🏋️ <b>{workout['title']}</b>\n"
+                        f"📅 {dt.strftime('%d.%m.%Y о %H:%M')}\n\n"
+                        f"Вже скоро починаємо! Підготуй зручний одяг, "
+                        f"водичку і гарний настрій 😊\n\n"
+                        f"🔗 <a href=\"{workout['teams_link']}\">Підключитись через Google Meet</a>\n\n"
+                        f"До зустрічі! 💪🔥"
+                    )
                 else:
-                    txt = (f"🚀 <b>Групове тренування починається!</b>\n\n🏋️ <b>{workout['title']}</b>\n\n"
-                           f"🔗 <a href=\"{workout['teams_link']}\">Підключитись!</a>")
+                    txt = (
+                        f"🚀 <b>Тренування починається ЗАРАЗ!</b>\n\n"
+                        f"🏋️ <b>{workout['title']}</b>\n\n"
+                        f"Час рухатись! Сьогодні ти стаєш ще сильнішою 💪\n\n"
+                        f"🔗 <a href=\"{workout['teams_link']}\">Приєднатись до тренування</a>\n\n"
+                        f"Тренер вже чекає — вперед! 🔥"
+                    )
                 for uid in ids:
                     try:
                         await app.bot.send_message(uid, txt, parse_mode="HTML", disable_web_page_preview=False)
@@ -1675,15 +1687,27 @@ async def notification_loop(app: Application):
                     except Exception as e:
                         logger.warning(f"notify group → {uid}: {e}")
 
+            # ── Персональні тренування ──
             for slot, ntype in pm.get_pending_notifications():
                 uid = slot["booked_by"]
                 if not uid: continue
                 if ntype == "1h":
-                    txt = (f"⏰ <b>Персональне тренування через 1 годину!</b>\n\n📅 {_fmt_slot(slot)}\n\n"
-                           f"🔗 <a href=\"{slot['teams_link']}\">Google Meet</a>\n\nГотуйтеся! 💪")
+                    txt = (
+                        f"🔔 <b>Через годину — твоє персональне тренування!</b>\n\n"
+                        f"📅 {_fmt_slot(slot)}\n\n"
+                        f"Підготуйся: зручний одяг, вода, і налаштуйся "
+                        f"на продуктивну роботу 😊\n\n"
+                        f"🔗 <a href=\"{slot['teams_link']}\">Підключитись через Google Meet</a>\n\n"
+                        f"Тренер вже готується до заняття саме з тобою! 🤝"
+                    )
                 else:
-                    txt = (f"🚀 <b>Персональне тренування починається!</b>\n\n📅 {_fmt_slot(slot)}\n\n"
-                           f"🔗 <a href=\"{slot['teams_link']}\">Підключитись!</a>")
+                    txt = (
+                        f"🚀 <b>Персональне тренування починається ЗАРАЗ!</b>\n\n"
+                        f"📅 {_fmt_slot(slot)}\n\n"
+                        f"Час для себе — найкраща інвестиція! 💫\n\n"
+                        f"🔗 <a href=\"{slot['teams_link']}\">Приєднатись до тренування</a>\n\n"
+                        f"Вперед до нових результатів! 💪🔥"
+                    )
                 try:
                     await app.bot.send_message(uid, txt, parse_mode="HTML", disable_web_page_preview=False)
                 except Exception as e:
