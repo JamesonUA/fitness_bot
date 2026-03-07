@@ -644,8 +644,8 @@ def _build_calendar(year: int, month: int, available_days: set[int],
 
 
 def _build_admin_calendar(year: int, month: int, cb_prefix: str,
-                           nav_prefix: str) -> list[list[InlineKeyboardButton]]:
-    """Календар для адміна — всі майбутні дні клікабельні, стрілки ◀️▶️."""
+                           nav_prefix: str = "") -> list[list[InlineKeyboardButton]]:
+    """Календар для адміна — всі майбутні дні клікабельні. Стрілки ◀️▶️ тільки якщо nav_prefix задано."""
     now = datetime.now(TIMEZONE)
     future_days = set()
     _, days_in_month = calendar.monthrange(year, month)
@@ -655,15 +655,20 @@ def _build_admin_calendar(year: int, month: int, cb_prefix: str,
             future_days.add(d)
 
     kb = []
-    prev_m = month - 1 if month > 1 else 12
-    prev_y = year if month > 1 else year - 1
-    next_m = month + 1 if month < 12 else 1
-    next_y = year if month < 12 else year + 1
-    kb.append([
-        InlineKeyboardButton("◀️", callback_data=f"{nav_prefix}_{prev_y}_{prev_m}"),
-        InlineKeyboardButton(f"📅 {MONTH_NAMES_UK[month]} {year}", callback_data="cal_ignore"),
-        InlineKeyboardButton("▶️", callback_data=f"{nav_prefix}_{next_y}_{next_m}"),
-    ])
+    if nav_prefix:
+        prev_m = month - 1 if month > 1 else 12
+        prev_y = year if month > 1 else year - 1
+        next_m = month + 1 if month < 12 else 1
+        next_y = year if month < 12 else year + 1
+        kb.append([
+            InlineKeyboardButton("◀️", callback_data=f"{nav_prefix}_{prev_y}_{prev_m}"),
+            InlineKeyboardButton(f"📅 {MONTH_NAMES_UK[month]} {year}", callback_data="cal_ignore"),
+            InlineKeyboardButton("▶️", callback_data=f"{nav_prefix}_{next_y}_{next_m}"),
+        ])
+    else:
+        kb.append([InlineKeyboardButton(
+            f"📅 {MONTH_NAMES_UK[month]} {year}", callback_data="cal_ignore"
+        )])
     kb.append([InlineKeyboardButton(d, callback_data="cal_ignore") for d in DAY_HEADERS])
 
     for week in calendar.monthcalendar(year, month):
@@ -838,7 +843,7 @@ async def show_personal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.edit_message_text(
         "🧑‍🏫 <b>Персональне тренування</b>\n\n"
         f"Вартість: <b>{PERSONAL_PRICE} грн</b>\n"
-        "Формат: 1-на-1 з тренером через Microsoft Teams\n\nОберіть дію:",
+        "Формат: 1-на-1 з тренером через Google Meet\n\nОберіть дію:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📅 Запис на тренування",  callback_data="personal_calendar")],
             [InlineKeyboardButton("💳 Оплатити тренування",  callback_data="personal_pay_start")],
@@ -894,7 +899,7 @@ async def book_personal_slot(update: Update, context: ContextTypes.DEFAULT_TYPE,
     pm.book(sid, user.id)
     await query.edit_message_text(
         f"✅ <b>Записано!</b>\n\n📅 {_fmt_slot(slot)}\n💰 <b>{PERSONAL_PRICE} грн</b>\n\n"
-        "Оплатіть, щоб отримати посилання на Microsoft Teams.",
+        "Оплатіть, щоб отримати посилання на Google Meet.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("💳 Оплатити зараз", callback_data=f"ppay_slot_{sid}")],
             [InlineKeyboardButton("◀️ Назад", callback_data="personal_menu")],
@@ -1079,22 +1084,23 @@ async def adm_add_group_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     if not _is_admin(update.effective_user.id):
         await query.answer("⛔", show_alert=True); return
-    context.user_data["adm_state"] = "group_title"
     await query.edit_message_text(
-        "🏋️➕ <b>Нове групове тренування</b> — крок 1/4\n\n"
-        "Введіть <b>назву</b>:\n<i>Наприклад: Кардіо для початківців</i>",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("❌ Скасувати", callback_data="admin_panel")
-        ]]), parse_mode="HTML"
+        "🏋️➕ <b>Нове групове тренування</b> — крок 1/3\n\nОберіть <b>назву</b>:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🧘‍♀️ Pilates",   callback_data="acg_title_Pilates")],
+            [InlineKeyboardButton("🤸 Stretching", callback_data="acg_title_Stretching")],
+            [InlineKeyboardButton("❌ Скасувати",  callback_data="admin_panel")],
+        ]), parse_mode="HTML"
     )
 
 
-async def _adm_group_show_calendar(query, context, year: int, month: int):
-    cal_kb = _build_admin_calendar(year, month, cb_prefix="acg_day", nav_prefix="acg_nav")
+async def _adm_group_show_calendar(query, context):
+    now = datetime.now(TIMEZONE)
+    cal_kb = _build_admin_calendar(now.year, now.month, cb_prefix="acg_day")
     cal_kb.append([InlineKeyboardButton("❌ Скасувати", callback_data="admin_panel")])
     title = context.user_data.get("new_title", "—")
     await query.edit_message_text(
-        f"🏋️➕ <b>Нове групове тренування</b> — крок 2/4\n\n"
+        f"🏋️➕ <b>Нове групове тренування</b> — крок 2/3\n\n"
         f"Назва: <b>{title}</b>\n\nОберіть <b>дату</b>:",
         reply_markup=InlineKeyboardMarkup(cal_kb), parse_mode="HTML"
     )
@@ -1107,7 +1113,7 @@ async def _adm_group_show_time(query, context):
     time_kb  = _build_time_picker("acg_time")
     time_kb.append([InlineKeyboardButton("❌ Скасувати", callback_data="admin_panel")])
     await query.edit_message_text(
-        f"🏋️➕ <b>Нове групове тренування</b> — крок 3/4\n\n"
+        f"🏋️➕ <b>Нове групове тренування</b> — крок 3/3\n\n"
         f"Назва: <b>{title}</b>\n📅 Дата: <b>{d_fmt}</b>\n\nОберіть <b>час</b>:",
         reply_markup=InlineKeyboardMarkup(time_kb), parse_mode="HTML"
     )
@@ -1116,8 +1122,9 @@ async def _adm_group_show_time(query, context):
 # ── Адмін: додати ПЕРСОНАЛЬНИЙ слот ──
 # Крок 1: дата (календар) → Крок 2: час (сітка) → Крок 3: Teams-лінк (текст)
 
-async def _adm_personal_show_calendar(query, context, year: int, month: int):
-    cal_kb = _build_admin_calendar(year, month, cb_prefix="acp_day", nav_prefix="acp_nav")
+async def _adm_personal_show_calendar(query, context):
+    now = datetime.now(TIMEZONE)
+    cal_kb = _build_admin_calendar(now.year, now.month, cb_prefix="acp_day")
     cal_kb.append([InlineKeyboardButton("❌ Скасувати", callback_data="admin_panel")])
     await query.edit_message_text(
         "🧘➕ <b>Новий персональний слот</b> — крок 1/3\n\nОберіть <b>дату</b>:",
@@ -1203,7 +1210,7 @@ async def adm_edit_time_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["adm_state"] = "edit_group_cal"
 
     now = datetime.now(TIMEZONE)
-    cal_kb = _build_admin_calendar(now.year, now.month, cb_prefix="edt_day", nav_prefix="edt_nav")
+    cal_kb = _build_admin_calendar(now.year, now.month, cb_prefix="edt_day")
     cal_kb.append([InlineKeyboardButton("❌ Скасувати", callback_data="adm_list_group")])
 
     await query.edit_message_text(
@@ -1285,20 +1292,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(user.id) or not state:
         return
 
-    # ── Групове: назва (крок 1/4) → показуємо календар ──
-    if state == "group_title":
-        context.user_data["new_title"] = text
-        context.user_data["adm_state"] = "group_cal"
-        now = datetime.now(TIMEZONE)
-        cal_kb = _build_admin_calendar(now.year, now.month, cb_prefix="acg_day", nav_prefix="acg_nav")
-        cal_kb.append([InlineKeyboardButton("❌ Скасувати", callback_data="admin_panel")])
-        await update.message.reply_text(
-            f"✅ Назва: <b>{text}</b>\n\nКрок 2/4 — оберіть <b>дату</b>:",
-            reply_markup=InlineKeyboardMarkup(cal_kb), parse_mode="HTML"
-        )
-        return
-
-    # ── Групове: Teams-лінк (крок 4/4) ──
+    # ── Групове: Google Meet-лінк ──
     if state == "group_link":
         if not text.startswith("http"):
             await update.message.reply_text("⚠️ Посилання має починатися з https://"); return
@@ -1379,9 +1373,13 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_add_workout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update.effective_user.id):
         return
-    context.user_data["adm_state"] = "group_title"
     await update.message.reply_text(
-        "🏋️➕ <b>Нове групове тренування</b> — крок 1/4\n\nВведіть <b>назву</b>:",
+        "🏋️➕ <b>Нове групове тренування</b> — крок 1/3\n\nОберіть <b>назву</b>:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🧘‍♀️ Pilates",   callback_data="acg_title_Pilates")],
+            [InlineKeyboardButton("🤸 Stretching", callback_data="acg_title_Stretching")],
+            [InlineKeyboardButton("❌ Скасувати",  callback_data="admin_panel")],
+        ]),
         parse_mode="HTML"
     )
 
@@ -1492,16 +1490,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_admin_panel(update, context)
         return
 
-    # ── Додати групове: календар + час ──
+    # ── Додати групове: назва (кнопка) → календар → час → лінк ──
     if data == "adm_add_group":
         await adm_add_group_start(update, context); return
 
-    if data.startswith("acg_nav_"):
-        # Навігація по місяцях (адмін, групове)
-        parts = data.split("_")  # acg_nav_YYYY_MM
-        y, m = int(parts[2]), int(parts[3])
+    if data.startswith("acg_title_"):
+        # Адмін обрав назву тренування (кнопка)
+        title = data[10:]  # "Pilates" або "Stretching"
+        context.user_data["new_title"] = title
         context.user_data["adm_state"] = "group_cal"
-        await _adm_group_show_calendar(query, context, y, m); return
+        await _adm_group_show_calendar(query, context); return
 
     if data.startswith("acg_day_"):
         # Адмін обрав день (групове)
@@ -1512,7 +1510,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _adm_group_show_time(query, context); return
 
     if data.startswith("acg_time_"):
-        # Адмін обрав годину (групове)
+        # Адмін обрав годину (групове) → запит лінка
         h = int(data.split("_")[-1])
         context.user_data["new_time"]  = f"{h:02d}:00"
         context.user_data["adm_state"] = "group_link"
@@ -1522,9 +1520,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
 
         await query.edit_message_text(
-            f"🏋️➕ <b>Нове групове тренування</b> — крок 4/4\n\n"
+            f"🏋️➕ <b>Нове групове тренування</b>\n\n"
             f"Назва: <b>{title}</b>\n📅 {d_fmt} о <b>{h:02d}:00</b>\n\n"
-            "Введіть <b>посилання Microsoft Teams</b>:",
+            "Введіть <b>посилання Google Meet</b>:",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("❌ Скасувати", callback_data="admin_panel")
             ]]), parse_mode="HTML"
@@ -1535,13 +1533,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "adm_add_personal":
         if not _is_admin(update.effective_user.id):
             await query.answer("⛔", show_alert=True); return
-        now = datetime.now(TIMEZONE)
-        await _adm_personal_show_calendar(query, context, now.year, now.month); return
-
-    if data.startswith("acp_nav_"):
-        parts = data.split("_")  # acp_nav_YYYY_MM
-        y, m = int(parts[2]), int(parts[3])
-        await _adm_personal_show_calendar(query, context, y, m); return
+        await _adm_personal_show_calendar(query, context); return
 
     if data.startswith("acp_day_"):
         parts = data.split("_")  # acp_day_YYYY_MM_DD
@@ -1561,7 +1553,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"🧘➕ <b>Новий персональний слот</b> — крок 3/3\n\n"
             f"📅 {d_fmt} о <b>{h:02d}:00</b>\n\n"
-            "Введіть <b>посилання Microsoft Teams</b>:",
+            "Введіть <b>посилання Google Meet</b>:",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("❌ Скасувати", callback_data="admin_panel")
             ]]), parse_mode="HTML"
@@ -1585,22 +1577,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("adm_etime_"):
         if not _is_admin(user.id): return
         await adm_edit_time_start(update, context, int(data[10:])); return
-
-    if data.startswith("edt_nav_"):
-        # Навігація по місяцях (редагування часу)
-        parts = data.split("_")  # edt_nav_YYYY_MM
-        y, m = int(parts[2]), int(parts[3])
-        wid = context.user_data.get("edit_wid")
-        workout = wm.get(wid) if wid else None
-        cal_kb = _build_admin_calendar(y, m, cb_prefix="edt_day", nav_prefix="edt_nav")
-        cal_kb.append([InlineKeyboardButton("❌ Скасувати", callback_data="adm_list_group")])
-        title = workout["title"] if workout else "—"
-        old_dt = _fmt_dt(workout) if workout else "—"
-        await query.edit_message_text(
-            f"🕐 <b>Змінити час тренування</b>\n\n"
-            f"🏋️ {title}\n📅 Поточний: <b>{old_dt}</b>\n\nОберіть <b>нову дату</b>:",
-            reply_markup=InlineKeyboardMarkup(cal_kb), parse_mode="HTML"
-        ); return
 
     if data.startswith("edt_day_"):
         # Адмін обрав нову дату
@@ -1688,7 +1664,7 @@ async def notification_loop(app: Application):
                 if ntype == "1h":
                     txt = (f"⏰ <b>Групове тренування через 1 годину!</b>\n\n🏋️ <b>{workout['title']}</b>\n"
                            f"📅 {dt.strftime('%d.%m.%Y о %H:%M')}\n\n"
-                           f"🔗 <a href=\"{workout['teams_link']}\">Microsoft Teams</a>\n\nГотуйтеся! 💪")
+                           f"🔗 <a href=\"{workout['teams_link']}\">Google Meet</a>\n\nГотуйтеся! 💪")
                 else:
                     txt = (f"🚀 <b>Групове тренування починається!</b>\n\n🏋️ <b>{workout['title']}</b>\n\n"
                            f"🔗 <a href=\"{workout['teams_link']}\">Підключитись!</a>")
@@ -1704,7 +1680,7 @@ async def notification_loop(app: Application):
                 if not uid: continue
                 if ntype == "1h":
                     txt = (f"⏰ <b>Персональне тренування через 1 годину!</b>\n\n📅 {_fmt_slot(slot)}\n\n"
-                           f"🔗 <a href=\"{slot['teams_link']}\">Microsoft Teams</a>\n\nГотуйтеся! 💪")
+                           f"🔗 <a href=\"{slot['teams_link']}\">Google Meet</a>\n\nГотуйтеся! 💪")
                 else:
                     txt = (f"🚀 <b>Персональне тренування починається!</b>\n\n📅 {_fmt_slot(slot)}\n\n"
                            f"🔗 <a href=\"{slot['teams_link']}\">Підключитись!</a>")
