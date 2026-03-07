@@ -7,7 +7,6 @@
 """
 
 import os
-import io
 import json
 import logging
 import asyncio
@@ -31,7 +30,6 @@ from telegram.ext import (
 BOT_TOKEN      = os.environ.get("BOT_TOKEN",      "8623568533:AAEC0nfGONryCrcLQ86njVwGQMt0f1erZD4")
 ADMIN_ID       = int(os.environ.get("ADMIN_ID",   "447671579"))
 CHANNEL_ID     = os.environ.get("CHANNEL_ID",     "@Fitness_start_pro")
-BACKUP_CHAT_ID = int(os.environ.get("BACKUP_CHAT_ID", "447671579"))
 
 CARD_NUMBER    = os.environ.get("CARD_NUMBER",    "0000 0000 0000 0000")
 CARD_OWNER     = os.environ.get("CARD_OWNER",     "Іванenko І.І.")
@@ -40,12 +38,13 @@ PERSONAL_PRICE = int(os.environ.get("PERSONAL_PRICE", "500"))
 
 TIMEZONE = ZoneInfo("Europe/Kyiv")
 
+# GitHub Gist — хмарне сховище для бекапів
+GITHUB_TOKEN   = os.environ.get("GITHUB_TOKEN", "")       # Personal Access Token з правом "gist"
+GIST_ID_FILE   = ".gist_id"                                # локально зберігає ID створеного Gist
+
 LOCAL_PAYMENTS_FILE = "fit_payments.json"
 LOCAL_WORKOUTS_FILE = "fit_workouts.json"
 LOCAL_PERSONAL_FILE = "fit_personal.json"
-PAYMENTS_FID_FILE   = ".fit_pay_fid"
-WORKOUTS_FID_FILE   = ".fit_wrk_fid"
-PERSONAL_FID_FILE   = ".fit_per_fid"
 
 # ═══════════════════════════════════════════════════════════════
 #  ЛОГУВАННЯ
@@ -59,133 +58,212 @@ logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════
-#  TELEGRAM STORAGE MANAGER
+#  GITHUB GIST STORAGE MANAGER
 # ═══════════════════════════════════════════════════════════════
 
-class TelegramStorageManager:
-    def __init__(self, local_file: str, fid_file: str, caption_marker: str):
-        self.local_file     = local_file
-        self.fid_file       = fid_file
-        self.caption_marker = caption_marker
+import time as _time
 
-    def _tg_post(self, method: str, **kwargs) -> dict | None:
+BACKUP_THROTTLE_SEC = int(os.environ.get("BACKUP_THROTTLE_SEC", "60"))  # 1 хв
+
+
+class GistStorageManager:
+    """
+    Зберігає JSON-дані у GitHub Gist (приватний) як хмарний бекап.
+
+    Схема:
+      save()  → локальний JSON (миттєво) + Gist (фоновий thread, з throttle)
+      load()  → Gist → локальний JSON (резерв)
+
+    Усі три менеджери (payments, workouts, personal) використовують
+    один спільний Gist з різними файлами всередині.
+    """
+
+    _gist_id: str | None = None      # спільний для всіх екземплярів
+    _gist_lock = threading.Lock()
+
+    def __init__(self, local_file: str, gist_filename: str):
+        self.local_file    = local_file
+        self.gist_filename = gist_filename   # ім'я файлу всередині Gist
+        self._last_upload  = 0.0
+        self._pending_data = None
+        self._lock         = threading.Lock()
+
+    # ── GitHub API ──
+
+    @classmethod
+    def _gh_headers(cls) -> dict:
+        return {
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    @classmethod
+    def _load_gist_id(cls) -> str | None:
+        """Завантажує Gist ID з локального файлу або змінної середовища."""
+        # Спочатку з env (для Railway)
+        gid = os.environ.get("GIST_ID", "")
+        if gid:
+            cls._gist_id = gid
+            return gid
+        # Потім з локального файлу
+        try:
+            if os.path.exists(GIST_ID_FILE):
+                v = open(GIST_ID_FILE).read().strip()
+                if v:
+                    cls._gist_id = v
+                    return v
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def _save_gist_id(cls, gist_id: str):
+        cls._gist_id = gist_id
+        try:
+            with open(GIST_ID_FILE, "w") as f:
+                f.write(gist_id)
+        except Exception:
+            pass
+
+    @classmethod
+    def _create_gist(cls) -> str | None:
+        """Створює новий приватний Gist, повертає gist_id."""
+        if not GITHUB_TOKEN:
+            logger.warning("GITHUB_TOKEN не задано — хмарний бекап вимкнено")
+            return None
         try:
             resp = req.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
-                timeout=30, **kwargs
+                "https://api.github.com/gists",
+                headers=cls._gh_headers(),
+                json={
+                    "description": "FitSessionBot backup (auto-created)",
+                    "public": False,
+                    "files": {
+                        "fit_payments.json": {"content": "{}"},
+                        "fit_workouts.json": {"content": "{}"},
+                        "fit_personal.json": {"content": "{}"},
+                    }
+                },
+                timeout=30,
             )
-            r = resp.json()
-            if r.get("ok"):
-                return r["result"]
-            logger.error(f"TG {method}: {r.get('description')}")
+            if resp.status_code == 201:
+                gist_id = resp.json()["id"]
+                cls._save_gist_id(gist_id)
+                logger.info(f"Gist створено: {gist_id}")
+                return gist_id
+            logger.error(f"Gist create: {resp.status_code} {resp.text[:200]}")
         except Exception as e:
-            logger.error(f"TG {method} exception: {e}")
+            logger.error(f"Gist create exception: {e}")
         return None
 
-    def _tg_get(self, method: str, **kwargs) -> dict | None:
+    @classmethod
+    def _ensure_gist(cls) -> str | None:
+        """Повертає gist_id, створюючи Gist якщо потрібно."""
+        with cls._gist_lock:
+            if cls._gist_id:
+                return cls._gist_id
+            gid = cls._load_gist_id()
+            if gid:
+                return gid
+            return cls._create_gist()
+
+    def _download_from_gist(self) -> dict | None:
+        """Завантажує файл із Gist."""
+        gist_id = self._ensure_gist()
+        if not gist_id or not GITHUB_TOKEN:
+            return None
         try:
             resp = req.get(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
-                timeout=30, **kwargs
+                f"https://api.github.com/gists/{gist_id}",
+                headers=self._gh_headers(),
+                timeout=30,
             )
-            r = resp.json()
-            if r.get("ok"):
-                return r["result"]
-            logger.error(f"TG {method}: {r.get('description')}")
+            if resp.status_code != 200:
+                logger.error(f"Gist get: {resp.status_code}")
+                return None
+            files = resp.json().get("files", {})
+            f = files.get(self.gist_filename)
+            if not f:
+                return None
+            content = f.get("content", "{}")
+            data = json.loads(content)
+            if data:
+                logger.info(f"[{self.gist_filename}] ← Gist OK")
+            return data if data else None
         except Exception as e:
-            logger.error(f"TG {method} exception: {e}")
+            logger.error(f"Gist download [{self.gist_filename}]: {e}")
         return None
 
-    def _save_fid(self, file_id: str):
-        try:
-            with open(self.fid_file, "w") as f:
-                f.write(file_id)
-        except Exception:
-            pass
-
-    def _load_fid(self) -> str | None:
-        try:
-            if os.path.exists(self.fid_file):
-                v = open(self.fid_file).read().strip()
-                return v or None
-        except Exception:
-            pass
-        return None
-
-    def _get_pinned_file_id(self) -> str | None:
-        result = self._tg_get("getChat", params={"chat_id": BACKUP_CHAT_ID})
-        if not result:
-            return None
-        pinned = result.get("pinned_message")
-        if not pinned:
-            return None
-        doc = pinned.get("document")
-        if not doc:
-            return None
-        if self.caption_marker not in pinned.get("caption", ""):
-            return None
-        return doc["file_id"]
-
-    def _upload_and_pin(self, data: dict):
-        buf = io.BytesIO(json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
-        fname = os.path.basename(self.local_file)
-        result = self._tg_post(
-            "sendDocument",
-            data={"chat_id": BACKUP_CHAT_ID, "caption": self.caption_marker},
-            files={"document": (fname, buf, "application/json")},
-        )
-        if not result:
+    def _upload_to_gist(self, data: dict):
+        """Оновлює файл у Gist."""
+        gist_id = self._ensure_gist()
+        if not gist_id or not GITHUB_TOKEN:
             return
-        file_id = result["document"]["file_id"]
-        msg_id  = result["message_id"]
-        self._save_fid(file_id)
-        self._tg_post(
-            "pinChatMessage",
-            data={"chat_id": BACKUP_CHAT_ID, "message_id": msg_id, "disable_notification": True},
-        )
-
-    def _download_by_fid(self, file_id: str) -> dict | None:
-        r1 = self._tg_get("getFile", params={"file_id": file_id})
-        if not r1:
-            return None
         try:
-            r2 = req.get(
-                f"https://api.telegram.org/file/bot{BOT_TOKEN}/{r1['file_path']}",
-                timeout=30
+            content = json.dumps(data, ensure_ascii=False, indent=2)
+            resp = req.patch(
+                f"https://api.github.com/gists/{gist_id}",
+                headers=self._gh_headers(),
+                json={"files": {self.gist_filename: {"content": content}}},
+                timeout=30,
             )
-            if r2.ok:
-                return r2.json()
+            if resp.status_code == 200:
+                logger.info(f"[{self.gist_filename}] → Gist OK")
+            else:
+                logger.error(f"Gist update [{self.gist_filename}]: {resp.status_code}")
         except Exception as e:
-            logger.error(f"Download [{self.caption_marker}]: {e}")
-        return None
+            logger.error(f"Gist upload [{self.gist_filename}]: {e}")
+
+    def _throttled_upload(self, data: dict):
+        """Завантажує тільки якщо пройшов throttle-інтервал."""
+        with self._lock:
+            now = _time.time()
+            if now - self._last_upload < BACKUP_THROTTLE_SEC:
+                self._pending_data = data
+                return
+            self._last_upload = now
+            self._pending_data = None
+        self._upload_to_gist(data)
+
+    # ── Публічні методи ──
 
     def load_raw(self) -> dict | None:
-        data = None
-        fid = self._load_fid()
-        if fid:
-            data = self._download_by_fid(fid)
-        if data is None:
-            fid = self._get_pinned_file_id()
-            if fid:
-                data = self._download_by_fid(fid)
-                if data:
-                    self._save_fid(fid)
+        """Завантажує дані: Gist → локальний файл (резерв)."""
+        data = self._download_from_gist()
+
         if data is None and os.path.exists(self.local_file):
             try:
                 with open(self.local_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                logger.info(f"[{self.gist_filename}] ← локальний файл (резерв)")
             except Exception as e:
-                logger.error(f"Локальний файл [{self.caption_marker}]: {e}")
+                logger.error(f"Локальний файл [{self.gist_filename}]: {e}")
+
         return data
 
     def save_raw(self, data: dict):
+        """Зберігає: локально миттєво + Gist у фоні з throttle."""
+        # 1. Локально — завжди, миттєво
         try:
             with open(self.local_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            logger.error(f"Локальне збереження [{self.caption_marker}]: {e}")
+            logger.error(f"Локальне збереження [{self.gist_filename}]: {e}")
+
+        # 2. Gist — у фоні, з throttle
         data_copy = dict(data)
-        threading.Thread(target=self._upload_and_pin, args=(data_copy,), daemon=True).start()
+        threading.Thread(target=self._throttled_upload, args=(data_copy,), daemon=True).start()
+
+    def flush_pending(self):
+        """Примусово завантажує pending-дані."""
+        with self._lock:
+            data = self._pending_data
+            if data is None:
+                return
+            self._pending_data = None
+            self._last_upload = _time.time()
+        self._upload_to_gist(data)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -196,10 +274,9 @@ class PaymentManager:
     def __init__(self):
         self.payments: dict = {}
         self._next_payment_id: int = 1
-        self._storage = TelegramStorageManager(
+        self._storage = GistStorageManager(
             local_file=LOCAL_PAYMENTS_FILE,
-            fid_file=PAYMENTS_FID_FILE,
-            caption_marker="fit_payments_backup"
+            gist_filename="fit_payments.json"
         )
 
     def load(self):
@@ -313,10 +390,9 @@ class WorkoutManager:
     def __init__(self):
         self.workouts: list[dict] = []
         self._next_id: int = 1
-        self._storage = TelegramStorageManager(
+        self._storage = GistStorageManager(
             local_file=LOCAL_WORKOUTS_FILE,
-            fid_file=WORKOUTS_FID_FILE,
-            caption_marker="fit_workouts_backup"
+            gist_filename="fit_workouts.json"
         )
 
     def load(self):
@@ -396,10 +472,9 @@ class PersonalManager:
     def __init__(self):
         self.slots: list[dict] = []
         self._next_id: int = 1
-        self._storage = TelegramStorageManager(
+        self._storage = GistStorageManager(
             local_file=LOCAL_PERSONAL_FILE,
-            fid_file=PERSONAL_FID_FILE,
-            caption_marker="fit_personal_backup"
+            gist_filename="fit_personal.json"
         )
 
     def load(self):
@@ -1639,6 +1714,15 @@ async def notification_loop(app: Application):
                     logger.warning(f"notify personal → {uid}: {e}")
         except Exception as e:
             logger.error(f"notification_loop: {e}")
+
+        # Завантажуємо відкладені бекапи (якщо throttle минув)
+        try:
+            pay._storage.flush_pending()
+            wm._storage.flush_pending()
+            pm._storage.flush_pending()
+        except Exception:
+            pass
+
         await asyncio.sleep(60)
 
 
