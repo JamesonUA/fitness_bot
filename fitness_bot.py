@@ -35,7 +35,7 @@ BACKUP_CHAT_ID = int(os.environ.get("BACKUP_CHAT_ID", "447671579"))
 
 CARD_NUMBER    = os.environ.get("CARD_NUMBER",    "0000 0000 0000 0000")
 CARD_OWNER     = os.environ.get("CARD_OWNER",     "Іванenko І.І.")
-GROUP_PRICE    = int(os.environ.get("GROUP_PRICE",    "150"))
+GROUP_PRICE    = int(os.environ.get("GROUP_PRICE",    "200"))
 PERSONAL_PRICE = int(os.environ.get("PERSONAL_PRICE", "500"))
 
 TIMEZONE = ZoneInfo("Europe/Kyiv")
@@ -292,6 +292,18 @@ class PaymentManager:
     def all_client_ids(self) -> list[int]:
         return [int(k) for k in self.payments.keys()]
 
+    def get_paid_users_info(self, workout_id: int) -> list[dict]:
+        """Повертає список {uid, username, full_name} тих, хто оплатив workout_id."""
+        result = []
+        for k, v in self.payments.items():
+            if workout_id in v.get("paid_workouts", []):
+                result.append({
+                    "uid": int(k),
+                    "username": v.get("username", ""),
+                    "full_name": v.get("full_name", ""),
+                })
+        return result
+
 
 # ═══════════════════════════════════════════════════════════════
 #  МЕНЕДЖЕР ГРУПОВИХ ТРЕНУВАНЬ
@@ -337,6 +349,16 @@ class WorkoutManager:
 
     def delete(self, wid: int):
         self.workouts = [w for w in self.workouts if w["id"] != wid]
+        self.save()
+
+    def update_datetime(self, wid: int, new_dt: datetime):
+        """Змінює час тренування, скидає прапорці нагадувань."""
+        for w in self.workouts:
+            if w["id"] == wid:
+                w["datetime"] = new_dt.isoformat()
+                w["notified_1h"] = False
+                w["notified_start"] = False
+                break
         self.save()
 
     def get(self, wid: int) -> dict | None:
@@ -1058,9 +1080,82 @@ async def adm_list_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for w in upcoming:
         cnt = wm.count_paid(w["id"])
         lines.append(f"#{w['id']} <b>{w['title']}</b> — {_fmt_dt(w)} | 👥{cnt}")
-        kb.append([InlineKeyboardButton(f"🗑 #{w['id']} {w['title'][:20]}", callback_data=f"adm_del_g_{w['id']}")])
+        kb.append([
+            InlineKeyboardButton(f"🕐 Час #{w['id']}", callback_data=f"adm_etime_{w['id']}"),
+            InlineKeyboardButton(f"👥 Оплатили #{w['id']}", callback_data=f"adm_paid_{w['id']}"),
+            InlineKeyboardButton(f"🗑", callback_data=f"adm_del_g_{w['id']}"),
+        ])
     kb.append([InlineKeyboardButton("◀️ Назад", callback_data="admin_panel")])
     await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+
+
+async def adm_show_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, wid: int):
+    """Показує розгорнутий список оплативших для конкретного тренування."""
+    query   = update.callback_query
+    workout = wm.get(wid)
+    if not workout:
+        await query.answer("Не знайдено", show_alert=True); return
+
+    users = pay.get_paid_users_info(wid)
+    lines = [f"👥 <b>Оплатили тренування #{wid}</b>\n"
+             f"🏋️ {workout['title']} — {_fmt_dt(workout)}\n"
+             f"Всього: <b>{len(users)}</b>\n"]
+    if not users:
+        lines.append("<i>Поки ніхто не оплатив.</i>")
+    else:
+        for i, u in enumerate(users, 1):
+            name = u["full_name"] or "—"
+            uname = f" (@{u['username']})" if u["username"] else ""
+            lines.append(f"{i}. {name}{uname} | <code>{u['uid']}</code>")
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ До списку", callback_data="adm_list_group")],
+            [InlineKeyboardButton("⚙️ Панель", callback_data="admin_panel")],
+        ]), parse_mode="HTML"
+    )
+
+
+async def adm_edit_time_start(update: Update, context: ContextTypes.DEFAULT_TYPE, wid: int):
+    """Крок 1: показує календар для вибору нової дати тренування."""
+    query   = update.callback_query
+    workout = wm.get(wid)
+    if not workout:
+        await query.answer("Не знайдено", show_alert=True); return
+
+    context.user_data["edit_wid"] = wid
+    context.user_data["adm_state"] = "edit_group_cal"
+
+    now = datetime.now(TIMEZONE)
+    cal_kb = _build_admin_calendar(now.year, now.month, cb_prefix="edt_day", nav_prefix="edt_nav")
+    cal_kb.append([InlineKeyboardButton("❌ Скасувати", callback_data="adm_list_group")])
+
+    await query.edit_message_text(
+        f"🕐 <b>Змінити час тренування</b>\n\n"
+        f"🏋️ {workout['title']}\n📅 Поточний: <b>{_fmt_dt(workout)}</b>\n\n"
+        "Оберіть <b>нову дату</b>:",
+        reply_markup=InlineKeyboardMarkup(cal_kb), parse_mode="HTML"
+    )
+
+
+async def adm_edit_time_show_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Крок 2: показує сітку годин для вибору нового часу."""
+    query    = update.callback_query
+    wid      = context.user_data.get("edit_wid")
+    workout  = wm.get(wid) if wid else None
+    date_str = context.user_data.get("edit_new_date", "")
+    d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
+
+    time_kb = _build_time_picker("edt_time")
+    time_kb.append([InlineKeyboardButton("❌ Скасувати", callback_data="adm_list_group")])
+
+    title = workout["title"] if workout else "—"
+    await query.edit_message_text(
+        f"🕐 <b>Змінити час тренування</b>\n\n"
+        f"🏋️ {title}\n📅 Нова дата: <b>{d_fmt}</b>\n\nОберіть <b>час</b>:",
+        reply_markup=InlineKeyboardMarkup(time_kb), parse_mode="HTML"
+    )
 
 
 async def adm_list_personal(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1405,6 +1500,90 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await adm_list_personal(update, context); return
     if data == "adm_bcast":
         await adm_bcast_start(update, context); return
+
+    # ── Показати оплативших ──
+    if data.startswith("adm_paid_"):
+        if not _is_admin(user.id): return
+        await adm_show_paid(update, context, int(data[9:])); return
+
+    # ── Редагувати час групового тренування ──
+    if data.startswith("adm_etime_"):
+        if not _is_admin(user.id): return
+        await adm_edit_time_start(update, context, int(data[10:])); return
+
+    if data.startswith("edt_nav_"):
+        # Навігація по місяцях (редагування часу)
+        parts = data.split("_")  # edt_nav_YYYY_MM
+        y, m = int(parts[2]), int(parts[3])
+        wid = context.user_data.get("edit_wid")
+        workout = wm.get(wid) if wid else None
+        cal_kb = _build_admin_calendar(y, m, cb_prefix="edt_day", nav_prefix="edt_nav")
+        cal_kb.append([InlineKeyboardButton("❌ Скасувати", callback_data="adm_list_group")])
+        title = workout["title"] if workout else "—"
+        old_dt = _fmt_dt(workout) if workout else "—"
+        await query.edit_message_text(
+            f"🕐 <b>Змінити час тренування</b>\n\n"
+            f"🏋️ {title}\n📅 Поточний: <b>{old_dt}</b>\n\nОберіть <b>нову дату</b>:",
+            reply_markup=InlineKeyboardMarkup(cal_kb), parse_mode="HTML"
+        ); return
+
+    if data.startswith("edt_day_"):
+        # Адмін обрав нову дату
+        parts = data.split("_")  # edt_day_YYYY_MM_DD
+        date_str = f"{int(parts[2])}-{int(parts[3]):02d}-{int(parts[4]):02d}"
+        context.user_data["edit_new_date"] = date_str
+        context.user_data["adm_state"] = "edit_group_time"
+        await adm_edit_time_show_hours(update, context); return
+
+    if data.startswith("edt_time_"):
+        # Адмін обрав новий час → зберігаємо та розсилаємо
+        if not _is_admin(user.id): return
+        h = int(data.split("_")[-1])
+        wid      = context.user_data.pop("edit_wid", None)
+        date_str = context.user_data.pop("edit_new_date", "")
+        context.user_data["adm_state"] = None
+
+        if not wid or not date_str:
+            await query.answer("Помилка", show_alert=True); return
+
+        new_dt = datetime.strptime(f"{date_str} {h:02d}:00", "%Y-%m-%d %H:%M").replace(tzinfo=TIMEZONE)
+        workout = wm.get(wid)
+        if not workout:
+            await query.answer("Тренування не знайдено", show_alert=True); return
+
+        old_dt_str = _fmt_dt(workout)
+        wm.update_datetime(wid, new_dt)
+        new_dt_str = new_dt.strftime("%d.%m.%Y о %H:%M")
+
+        # Розсилка оплатившим про зміну часу
+        paid_users = pay.get_paid_workout_ids(wid)
+        sent = 0
+        for uid in paid_users:
+            try:
+                await context.bot.send_message(
+                    uid,
+                    f"⚠️ <b>Увага! Зміна часу тренування!</b>\n\n"
+                    f"🏋️ <b>{workout['title']}</b>\n"
+                    f"❌ Було: {old_dt_str}\n"
+                    f"✅ Стало: <b>{new_dt_str}</b>\n\n"
+                    f"<i>Будь ласка, зверніть увагу на новий час.</i>",
+                    parse_mode="HTML"
+                )
+                sent += 1
+                await asyncio.sleep(0.05)
+            except Exception:
+                pass
+
+        await query.edit_message_text(
+            f"✅ <b>Час змінено!</b>\n\n"
+            f"🏋️ {workout['title']}\n"
+            f"📅 Новий час: <b>{new_dt_str}</b>\n\n"
+            f"📢 Повідомлено оплативших: {sent} з {len(paid_users)}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏋️📋 Список", callback_data="adm_list_group")],
+                [InlineKeyboardButton("⚙️ Панель", callback_data="admin_panel")],
+            ]), parse_mode="HTML"
+        ); return
 
     if data.startswith("adm_del_g_"):
         if not _is_admin(user.id): return
