@@ -27,12 +27,13 @@ from telegram.ext import (
 #  НАЛАШТУВАННЯ
 # ═══════════════════════════════════════════════════════════════
 
-BOT_TOKEN      = os.environ.get("BOT_TOKEN",
-ADMIN_ID       = int(os.environ.get("ADMIN_ID",
-CHANNEL_ID     = os.environ.get("CHANNEL_ID",
-CARD_NUMBER    = os.environ.get("CARD_NUMBER",
-CARD_OWNER     = os.environ.get("CARD_OWNER",
-GROUP_PRICE    = int(os.environ.get("GROUP_PRICE",    "200"))
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+ADMIN_ID = int(os.environ["ADMIN_ID"])
+CHANNEL_ID = os.environ["CHANNEL_ID"]
+CARD_NUMBER = os.environ["CARD_NUMBER"]
+CARD_OWNER = os.environ["CARD_OWNER"]
+
+GROUP_PRICE = int(os.environ.get("GROUP_PRICE", "200"))
 PERSONAL_PRICE = int(os.environ.get("PERSONAL_PRICE", "500"))
 
 TIMEZONE = ZoneInfo("Europe/Kyiv")
