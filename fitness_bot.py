@@ -820,7 +820,7 @@ async def group_pay_details(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         f"Переказати на картку:\n<code>{CARD_NUMBER}</code>\n"
         f"Отримувач: <b>{CARD_OWNER}</b>\n\n"
         f"Після переказу надішліть 📸 <b>скріншот підтвердження</b>.\n"
-        f"<i>⏱ Перевірка до 1–3 годин.</i>",
+        f"<i>⏱ Очікуйте підтвердження вашої участі у тренуванні.</i>",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("◀️ Назад", callback_data="group_pay_start"),
              InlineKeyboardButton("🏠 Меню", callback_data="main_menu")],
