@@ -403,7 +403,7 @@ class WorkoutManager:
         w = {
             "id": self._next_id, "title": title,
             "datetime": dt.isoformat(), "teams_link": teams_link,
-            "channel_msg_id": None, "notified_1h": False, "notified_start": False,
+            "channel_msg_id": None, "notified_1h": False, "notified_start": False, "notified_end": False,
         }
         self.workouts.append(w)
         self._next_id += 1
@@ -428,6 +428,7 @@ class WorkoutManager:
                 w["datetime"] = new_dt.isoformat()
                 w["notified_1h"] = False
                 w["notified_start"] = False
+                w["notified_end"] = False
                 break
         self.save()
 
@@ -450,6 +451,9 @@ class WorkoutManager:
                 result.append((w, "1h")); w["notified_1h"] = True; changed = True
             if not w["notified_start"] and -300 <= diff <= 300:
                 result.append((w, "start")); w["notified_start"] = True; changed = True
+            # Повідомлення після завершення тренування (60 хв тренування + 5 хв = 65 хв після старту)
+            if not w.get("notified_end", False) and -4200 <= diff <= -3600:
+                result.append((w, "end")); w["notified_end"] = True; changed = True
         if changed:
             self.save()
         return result
@@ -485,7 +489,7 @@ class PersonalManager:
         slot = {
             "id": f"p_{self._next_id}", "date": date_str, "time": time_str,
             "teams_link": teams_link, "booked_by": None,
-            "notified_1h": False, "notified_start": False,
+            "notified_1h": False, "notified_start": False, "notified_end": False,
         }
         self.slots.append(slot)
         self._next_id += 1
@@ -571,6 +575,9 @@ class PersonalManager:
                 result.append((s, "1h")); s["notified_1h"] = True; changed = True
             if not s.get("notified_start", False) and -300 <= diff <= 300:
                 result.append((s, "start")); s["notified_start"] = True; changed = True
+            # Повідомлення після завершення (60 хв + 5 хв = 65 хв після старту)
+            if not s.get("notified_end", False) and -4200 <= diff <= -3600:
+                result.append((s, "end")); s["notified_end"] = True; changed = True
         if changed:
             self.save()
         return result
@@ -1666,6 +1673,18 @@ async def notification_loop(app: Application):
                         f"🔗 <a href=\"{workout['teams_link']}\">Підключитись через Google Meet</a>\n\n"
                         f"До зустрічі! 💪🔥"
                     )
+                elif ntype == "end":
+                    txt = (
+                        f"🎉 <b>Тренування завершено — ти молодець!</b>\n\n"
+                        f"🏋️ <b>{workout['title']}</b>\n"
+                        f"📅 {dt.strftime('%d.%m.%Y о %H:%M')}\n\n"
+                        f"Дякуємо, що була з нами сьогодні! 🙏\n"
+                        f"Кожне тренування — це крок до кращої версії себе, "
+                        f"і ти вже на цьому шляху. Пишаємось твоєю наполегливістю! 💪\n\n"
+                        f"Не забудь випити водички та трішки відпочити 😊\n\n"
+                        f"📢 <b>Слідкуй за нашими оновленнями</b> — незабаром "
+                        f"анонсуємо нові тренування! До зустрічі! 🔥"
+                    )
                 else:
                     txt = (
                         f"🚀 <b>Тренування починається ЗАРАЗ!</b>\n\n"
@@ -1693,6 +1712,17 @@ async def notification_loop(app: Application):
                         f"на продуктивну роботу 😊\n\n"
                         f"🔗 <a href=\"{slot['teams_link']}\">Підключитись через Google Meet</a>\n\n"
                         f"Тренер вже готується до заняття саме з тобою! 🤝"
+                    )
+                elif ntype == "end":
+                    txt = (
+                        f"🎉 <b>Персональне тренування завершено!</b>\n\n"
+                        f"📅 {_fmt_slot(slot)}\n\n"
+                        f"Дякуємо за сьогоднішнє заняття! 🙏\n"
+                        f"Ти чудово попрацювала — кожне тренування наближає "
+                        f"тебе до твоєї мети. Так тримати! 💪✨\n\n"
+                        f"Не забудь відпочити та відновити сили 😊\n\n"
+                        f"📢 <b>Слідкуй за розкладом</b> — бронюй наступне "
+                        f"персональне тренування та продовжуй свій шлях до результату! 🔥"
                     )
                 else:
                     txt = (
