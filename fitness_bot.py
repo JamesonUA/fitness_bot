@@ -619,6 +619,10 @@ MONTH_NAMES_UK = {
 }
 DAY_HEADERS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 
+# Кнопка «Головне меню» для вставки в будь-яке повідомлення
+HOME_BTN = [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")]
+HOME_MARKUP = InlineKeyboardMarkup([HOME_BTN])
+
 
 def _build_calendar(year: int, month: int, available_days: set[int],
                      cb_prefix: str) -> list[list[InlineKeyboardButton]]:
@@ -712,6 +716,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("👥 Групові тренування",     callback_data="group_menu")],
         [InlineKeyboardButton("🧑‍🏫 Персональне тренування", callback_data="personal_menu")],
         [InlineKeyboardButton("👤 Мій статус",              callback_data="my_status")],
+        [InlineKeyboardButton("📩 Зв'язок з тренером",     callback_data="contact_trainer")],
     ]
     if _is_admin(user.id):
         kb.append([InlineKeyboardButton("⚙️ Адмін-панель", callback_data="admin_panel")])
@@ -733,6 +738,7 @@ async def _edit_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("👥 Групові тренування",     callback_data="group_menu")],
         [InlineKeyboardButton("🧑‍🏫 Персональне тренування", callback_data="personal_menu")],
         [InlineKeyboardButton("👤 Мій статус",              callback_data="my_status")],
+        [InlineKeyboardButton("📩 Зв'язок з тренером",     callback_data="contact_trainer")],
     ]
     if _is_admin(user.id):
         kb.append([InlineKeyboardButton("⚙️ Адмін-панель", callback_data="admin_panel")])
@@ -1006,14 +1012,15 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     payment_id = context.user_data.get("payment_id")
     pay_type   = context.user_data.get("pay_type", "group")
     if not payment_id:
-        await update.message.reply_text("⚠️ Немає активного платежу. /start"); return
+        await update.message.reply_text("⚠️ Немає активного платежу.",
+                                       reply_markup=HOME_MARKUP); return
 
     photo = update.message.photo[-1]
     context.user_data["waiting_screenshot"] = False
 
     await update.message.reply_text(
         "✅ <b>Скріншот отримано!</b>\nПлатіж на перевірці (до 1–3 годин) 🙏",
-        parse_mode="HTML"
+        reply_markup=HOME_MARKUP, parse_mode="HTML"
     )
 
     if pay_type == "group":
@@ -1287,7 +1294,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get("adm_state")
 
     if context.user_data.get("waiting_screenshot"):
-        await update.message.reply_text("📸 Надішліть <b>фото</b>, а не текст.", parse_mode="HTML")
+        await update.message.reply_text("📸 Надішліть <b>фото</b>, а не текст.",
+                                       reply_markup=HOME_MARKUP, parse_mode="HTML")
         return
 
     if not _is_admin(user.id) or not state:
@@ -1358,7 +1366,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sent = failed = 0
         for uid in all_ids:
             try:
-                await context.bot.send_message(uid, f"📢 <b>Від тренера:</b>\n\n{text}", parse_mode="HTML")
+                await context.bot.send_message(uid, f"📢 <b>Від тренера:</b>\n\n{text}",
+                                               reply_markup=HOME_MARKUP, parse_mode="HTML")
                 sent += 1; await asyncio.sleep(0.05)
             except Exception:
                 failed += 1
@@ -1401,6 +1410,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Навігація ──
     if data == "main_menu":
         await _edit_main_menu(update, context); return
+
+    if data == "contact_trainer":
+        await query.edit_message_text(
+            "📩 <b>Зв'язок з тренером</b>\n\n"
+            "Якщо у вас є питання, будь ласка, звертайтесь "
+            "<a href=\"https://www.instagram.com/vviolas13/\">сюди</a> 😊",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+            ]),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        return
 
     # ── Групові (клієнт) ──
     if data == "group_menu":
@@ -1463,7 +1485,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 txt = "🎉 <b>Оплату підтверджено!</b>"
 
-        await context.bot.send_message(client_uid, txt, parse_mode="HTML", disable_web_page_preview=False)
+        await context.bot.send_message(client_uid, txt, parse_mode="HTML",
+                                       reply_markup=HOME_MARKUP, disable_web_page_preview=False)
         return
 
     if data.startswith("adm_no_"):
@@ -1619,7 +1642,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"❌ Було: {old_dt_str}\n"
                     f"✅ Стало: <b>{new_dt_str}</b>\n\n"
                     f"<i>Будь ласка, зверніть увагу на новий час.</i>",
-                    parse_mode="HTML"
+                    reply_markup=HOME_MARKUP, parse_mode="HTML"
                 )
                 sent += 1
                 await asyncio.sleep(0.05)
@@ -1695,7 +1718,8 @@ async def notification_loop(app: Application):
                     )
                 for uid in ids:
                     try:
-                        await app.bot.send_message(uid, txt, parse_mode="HTML", disable_web_page_preview=False)
+                        await app.bot.send_message(uid, txt, parse_mode="HTML",
+                                                   reply_markup=HOME_MARKUP, disable_web_page_preview=False)
                         await asyncio.sleep(0.05)
                     except Exception as e:
                         logger.warning(f"notify group → {uid}: {e}")
@@ -1733,7 +1757,8 @@ async def notification_loop(app: Application):
                         f"Вперед до нових результатів! 💪🔥"
                     )
                 try:
-                    await app.bot.send_message(uid, txt, parse_mode="HTML", disable_web_page_preview=False)
+                    await app.bot.send_message(uid, txt, parse_mode="HTML",
+                                               reply_markup=HOME_MARKUP, disable_web_page_preview=False)
                 except Exception as e:
                     logger.warning(f"notify personal → {uid}: {e}")
         except Exception as e:
