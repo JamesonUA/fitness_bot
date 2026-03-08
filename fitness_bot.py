@@ -979,8 +979,11 @@ async def show_my_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("  Запланованих немає.")
     else:
         for w in upcoming[:5]:
-            icon = "✅" if pay.has_paid_group(user.id, w["id"]) else "❌"
-            lines.append(f"  {icon} {w['title']} ({_fmt_dt(w)})")
+            if pay.has_paid_group(user.id, w["id"]):
+                lines.append(f"  ✅ {w['title']} ({_fmt_dt(w)})")
+                lines.append(f"  🔗 <a href=\"{w['teams_link']}\">Підключитись</a>")
+            else:
+                lines.append(f"  ❌ {w['title']} ({_fmt_dt(w)})")
 
     lines.append("\n<b>🧑‍🏫 Персональні тренування:</b>")
     user_personal = [s for s in pm.all_upcoming() if s["booked_by"] == user.id]
@@ -988,8 +991,11 @@ async def show_my_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("  Записів немає.")
     else:
         for s in user_personal[:5]:
-            icon = "✅" if pay.has_paid_personal(user.id, s["id"]) else "⏳"
-            lines.append(f"  {icon} {_fmt_slot(s)}")
+            if pay.has_paid_personal(user.id, s["id"]):
+                lines.append(f"  ✅ {_fmt_slot(s)}")
+                lines.append(f"  🔗 <a href=\"{s['teams_link']}\">Підключитись</a>")
+            else:
+                lines.append(f"  ⏳ {_fmt_slot(s)}")
 
     await query.edit_message_text(
         "\n".join(lines),
@@ -997,7 +1003,7 @@ async def show_my_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("👥 Групові", callback_data="group_menu"),
              InlineKeyboardButton("🧑‍🏫 Персональні", callback_data="personal_menu")],
             [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
-        ]), parse_mode="HTML"
+        ]), parse_mode="HTML", disable_web_page_preview=True
     )
 
 
