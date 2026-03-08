@@ -1007,6 +1007,27 @@ async def show_my_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+
+    # ── Адмін: фото для анонсу групового тренування (крок 6/6) ──
+    if context.user_data.get("adm_state") == "group_photo" and _is_admin(user.id):
+        photo = update.message.photo[-1]
+        context.user_data["new_photo"] = photo.file_id
+
+        async def _reply(text, markup, pm):
+            await update.message.reply_text(text, reply_markup=markup, parse_mode=pm)
+        await _finalize_group_workout(context, _reply)
+        return
+
+    # ── Адмін: фото для анонсу персонального тренування (крок 5/5) ──
+    if context.user_data.get("adm_state") == "personal_photo" and _is_admin(user.id):
+        photo = update.message.photo[-1]
+        context.user_data["new_personal_photo"] = photo.file_id
+
+        async def _reply_p(text, markup, pm):
+            await update.message.reply_text(text, reply_markup=markup, parse_mode=pm)
+        await _finalize_personal_slot(context, _reply_p)
+        return
+
     if not context.user_data.get("waiting_screenshot"):
         return
     payment_id = context.user_data.get("payment_id")
@@ -1093,7 +1114,7 @@ async def adm_add_group_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not _is_admin(update.effective_user.id):
         await query.answer("⛔", show_alert=True); return
     await query.edit_message_text(
-        "🏋️➕ <b>Нове групове тренування</b> — крок 1/3\n\nОберіть <b>назву</b>:",
+        "🏋️➕ <b>Нове групове тренування</b> — крок 1/6\n\nОберіть <b>назву</b>:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🧘‍♀️ Pilates",   callback_data="acg_title_Pilates")],
             [InlineKeyboardButton("🤸 Stretching", callback_data="acg_title_Stretching")],
@@ -1108,7 +1129,7 @@ async def _adm_group_show_calendar(query, context):
     cal_kb.append([InlineKeyboardButton("❌ Скасувати", callback_data="admin_panel")])
     title = context.user_data.get("new_title", "—")
     await query.edit_message_text(
-        f"🏋️➕ <b>Нове групове тренування</b> — крок 2/3\n\n"
+        f"🏋️➕ <b>Нове групове тренування</b> — крок 2/6\n\n"
         f"Назва: <b>{title}</b>\n\nОберіть <b>дату</b>:",
         reply_markup=InlineKeyboardMarkup(cal_kb), parse_mode="HTML"
     )
@@ -1121,21 +1142,134 @@ async def _adm_group_show_time(query, context):
     time_kb  = _build_time_picker("acg_time")
     time_kb.append([InlineKeyboardButton("❌ Скасувати", callback_data="admin_panel")])
     await query.edit_message_text(
-        f"🏋️➕ <b>Нове групове тренування</b> — крок 3/3\n\n"
+        f"🏋️➕ <b>Нове групове тренування</b> — крок 3/6\n\n"
         f"Назва: <b>{title}</b>\n📅 Дата: <b>{d_fmt}</b>\n\nОберіть <b>час</b>:",
         reply_markup=InlineKeyboardMarkup(time_kb), parse_mode="HTML"
     )
 
 
+async def _finalize_group_workout(context, reply_func):
+    """
+    Створює групове тренування та публікує анонс у канал.
+    reply_func — async callable(text, reply_markup, parse_mode) для відповіді адміну.
+    """
+    title    = context.user_data.pop("new_title", "Тренування")
+    date_str = context.user_data.pop("new_date", "")
+    time_str = context.user_data.pop("new_time", "00:00")
+    link     = context.user_data.pop("new_link", "")
+    desc     = context.user_data.pop("new_desc", "")
+    photo_id = context.user_data.pop("new_photo", "")
+    context.user_data["adm_state"] = None
+
+    dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=TIMEZONE)
+    workout = wm.add(title, dt, link)
+
+    bot_me = await context.bot.get_me()
+
+    if desc:
+        channel_text = (
+            f"🏋️ <b>Онлайн-тренування!</b>\n\n📌 {title}\n"
+            f"📅 {dt.strftime('%d.%m.%Y о %H:%M')}\n\n"
+            f"{desc}\n\n"
+            f"💳 Вартість: <b>{GROUP_PRICE} грн</b>\n\n"
+            f"👉 @{bot_me.username} — оплата та посилання"
+        )
+    else:
+        channel_text = (
+            f"🏋️ <b>Онлайн-тренування!</b>\n\n📌 {title}\n"
+            f"📅 {dt.strftime('%d.%m.%Y о %H:%M')}\n\n"
+            f"💳 Вартість: <b>{GROUP_PRICE} грн</b>\n\n"
+            f"👉 @{bot_me.username} — оплата та посилання"
+        )
+
+    ch_note = ""
+    try:
+        if photo_id:
+            msg = await context.bot.send_photo(
+                chat_id=CHANNEL_ID, photo=photo_id,
+                caption=channel_text, parse_mode="HTML"
+            )
+        else:
+            msg = await context.bot.send_message(
+                chat_id=CHANNEL_ID, text=channel_text, parse_mode="HTML"
+            )
+        wm.set_channel_msg(workout["id"], msg.message_id)
+        ch_note = f"✅ Анонс у {CHANNEL_ID}"
+    except Exception as e:
+        logger.error(f"Канал: {e}"); ch_note = f"⚠️ Канал: {e}"
+
+    await reply_func(
+        f"✅ <b>Групове тренування додано!</b>\n\n🏋️ {title}\n"
+        f"📅 {dt.strftime('%d.%m.%Y о %H:%M')}\n\n{ch_note}",
+        InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏋️📋 Список", callback_data="adm_list_group")],
+            [InlineKeyboardButton("⚙️ Панель", callback_data="admin_panel")],
+        ]),
+        "HTML"
+    )
+
+
 # ── Адмін: додати ПЕРСОНАЛЬНИЙ слот ──
-# Крок 1: дата (календар) → Крок 2: час (сітка) → Крок 3: Teams-лінк (текст)
+# Крок 1: дата → Крок 2: час → Крок 3: лінк → Крок 4: опис → Крок 5: фото
+
+async def _finalize_personal_slot(context, reply_func):
+    """
+    Створює персональний слот та публікує анонс у канал (без Meet-лінку).
+    """
+    date_str = context.user_data.pop("new_personal_date", "")
+    time_str = context.user_data.pop("new_personal_time", "00:00")
+    link     = context.user_data.pop("new_personal_link", "")
+    desc     = context.user_data.pop("new_personal_desc", "")
+    photo_id = context.user_data.pop("new_personal_photo", "")
+    context.user_data["adm_state"] = None
+
+    slot = pm.add_slot(date_str, time_str, link)
+    d_fmt = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
+
+    bot_me = await context.bot.get_me()
+
+    channel_text = (
+        f"🧑‍🏫 <b>Персональне тренування!</b>\n\n"
+        f"📅 {d_fmt} о {time_str}\n\n"
+    )
+    if desc:
+        channel_text += f"{desc}\n\n"
+    channel_text += (
+        f"💳 Вартість: <b>{PERSONAL_PRICE} грн</b>\n\n"
+        f"👉 @{bot_me.username} — запис та оплата"
+    )
+
+    ch_note = ""
+    try:
+        if photo_id:
+            msg = await context.bot.send_photo(
+                chat_id=CHANNEL_ID, photo=photo_id,
+                caption=channel_text, parse_mode="HTML"
+            )
+        else:
+            msg = await context.bot.send_message(
+                chat_id=CHANNEL_ID, text=channel_text, parse_mode="HTML"
+            )
+        ch_note = f"✅ Анонс у {CHANNEL_ID}"
+    except Exception as e:
+        logger.error(f"Канал (personal): {e}"); ch_note = f"⚠️ Канал: {e}"
+
+    await reply_func(
+        f"✅ <b>Персональний слот додано!</b>\n\n📅 {d_fmt} о {time_str}\n🆔 {slot['id']}\n\n{ch_note}",
+        InlineKeyboardMarkup([
+            [InlineKeyboardButton("🧘📋 Список", callback_data="adm_list_personal")],
+            [InlineKeyboardButton("🧘➕ Ще один", callback_data="adm_add_personal")],
+            [InlineKeyboardButton("⚙️ Панель", callback_data="admin_panel")],
+        ]),
+        "HTML"
+    )
 
 async def _adm_personal_show_calendar(query, context):
     now = datetime.now(TIMEZONE)
     cal_kb = _build_admin_calendar(now.year, now.month, cb_prefix="acp_day")
     cal_kb.append([InlineKeyboardButton("❌ Скасувати", callback_data="admin_panel")])
     await query.edit_message_text(
-        "🧘➕ <b>Новий персональний слот</b> — крок 1/3\n\nОберіть <b>дату</b>:",
+        "🧘➕ <b>Новий персональний слот</b> — крок 1/5\n\nОберіть <b>дату</b>:",
         reply_markup=InlineKeyboardMarkup(cal_kb), parse_mode="HTML"
     )
 
@@ -1146,7 +1280,7 @@ async def _adm_personal_show_time(query, context):
     time_kb  = _build_time_picker("acp_time")
     time_kb.append([InlineKeyboardButton("❌ Скасувати", callback_data="admin_panel")])
     await query.edit_message_text(
-        f"🧘➕ <b>Новий персональний слот</b> — крок 2/3\n\n"
+        f"🧘➕ <b>Новий персональний слот</b> — крок 2/5\n\n"
         f"📅 Дата: <b>{d_fmt}</b>\n\nОберіть <b>час</b>:",
         reply_markup=InlineKeyboardMarkup(time_kb), parse_mode="HTML"
     )
@@ -1301,61 +1435,117 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(user.id) or not state:
         return
 
-    # ── Групове: Google Meet-лінк ──
+    # ── Групове: Google Meet-лінк (крок 4/6) → перехід до опису ──
     if state == "group_link":
         if not text.startswith("http"):
             await update.message.reply_text("⚠️ Посилання має починатися з https://"); return
 
-        title    = context.user_data.pop("new_title", "Тренування")
-        date_str = context.user_data.pop("new_date", "")
-        time_str = context.user_data.pop("new_time", "00:00")
-        dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=TIMEZONE)
-        workout = wm.add(title, dt, text)
-        context.user_data["adm_state"] = None
+        context.user_data["new_link"] = text
+        context.user_data["adm_state"] = "group_desc"
 
-        bot_me = await context.bot.get_me()
-        channel_text = (
-            f"🏋️ <b>Онлайн-тренування!</b>\n\n📌 {title}\n"
-            f"📅 {dt.strftime('%d.%m.%Y о %H:%M')}\n\n"
-            f"💳 Вартість: <b>{GROUP_PRICE} грн</b>\n\n"
-            f"👉 @{bot_me.username} — оплата та посилання"
-        )
-        ch_note = ""
-        try:
-            msg = await context.bot.send_message(chat_id=CHANNEL_ID, text=channel_text, parse_mode="HTML")
-            wm.set_channel_msg(workout["id"], msg.message_id)
-            ch_note = f"✅ Анонс у {CHANNEL_ID}"
-        except Exception as e:
-            logger.error(f"Канал: {e}"); ch_note = f"⚠️ Канал: {e}"
+        title    = context.user_data.get("new_title", "—")
+        date_str = context.user_data.get("new_date", "")
+        time_str = context.user_data.get("new_time", "00:00")
+        d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
 
         await update.message.reply_text(
-            f"✅ <b>Групове тренування додано!</b>\n\n🏋️ {title}\n"
-            f"📅 {dt.strftime('%d.%m.%Y о %H:%M')}\n\n{ch_note}",
+            f"🏋️➕ <b>Нове групове тренування</b> — крок 5/6\n\n"
+            f"Назва: <b>{title}</b>\n📅 {d_fmt} о <b>{time_str}</b>\n"
+            f"🔗 Лінк: ✅\n\n"
+            f"Введіть <b>опис для анонсу</b> в каналі (довільний текст)\n"
+            f"або натисніть <b>Пропустити</b> для стандартного шаблону:",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏋️📋 Список", callback_data="adm_list_group")],
-                [InlineKeyboardButton("⚙️ Панель", callback_data="admin_panel")],
+                [InlineKeyboardButton("⏭ Пропустити", callback_data="acg_skip_desc")],
+                [InlineKeyboardButton("❌ Скасувати",  callback_data="admin_panel")],
             ]), parse_mode="HTML"
         )
         return
 
-    # ── Персональне: Teams-лінк (крок 3/3) ──
+    # ── Групове: опис для анонсу (крок 5/6) → перехід до фото ──
+    if state == "group_desc":
+        context.user_data["new_desc"] = text
+        context.user_data["adm_state"] = "group_photo"
+
+        title    = context.user_data.get("new_title", "—")
+        date_str = context.user_data.get("new_date", "")
+        time_str = context.user_data.get("new_time", "00:00")
+        d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
+
+        await update.message.reply_text(
+            f"🏋️➕ <b>Нове групове тренування</b> — крок 6/6\n\n"
+            f"Назва: <b>{title}</b>\n📅 {d_fmt} о <b>{time_str}</b>\n"
+            f"🔗 Лінк: ✅\n📝 Опис: ✅\n\n"
+            f"Надішліть <b>фото для анонсу</b>\n"
+            f"або натисніть <b>Пропустити</b>:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏭ Пропустити", callback_data="acg_skip_photo")],
+                [InlineKeyboardButton("❌ Скасувати",  callback_data="admin_panel")],
+            ]), parse_mode="HTML"
+        )
+        return
+
+    # ── Групове: очікується фото, а не текст ──
+    if state == "group_photo":
+        await update.message.reply_text(
+            "📸 Надішліть <b>фото</b>, а не текст.\n"
+            "Або натисніть <b>Пропустити</b> вище ⬆️",
+            parse_mode="HTML"
+        )
+        return
+
+    # ── Персональне: Google Meet-лінк (крок 3/5) → перехід до опису ──
     if state == "personal_link":
         if not text.startswith("http"):
             await update.message.reply_text("⚠️ Посилання має починатися з https://"); return
 
-        date_str = context.user_data.pop("new_personal_date", "")
-        time_str = context.user_data.pop("new_personal_time", "00:00")
-        slot = pm.add_slot(date_str, time_str, text)
-        context.user_data["adm_state"] = None
+        context.user_data["new_personal_link"] = text
+        context.user_data["adm_state"] = "personal_desc"
 
-        d_fmt = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
+        date_str = context.user_data.get("new_personal_date", "")
+        time_str = context.user_data.get("new_personal_time", "00:00")
+        d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
+
         await update.message.reply_text(
-            f"✅ <b>Персональний слот додано!</b>\n\n📅 {d_fmt} о {time_str}\n🆔 {slot['id']}",
+            f"🧘➕ <b>Новий персональний слот</b> — крок 4/5\n\n"
+            f"📅 {d_fmt} о <b>{time_str}</b>\n"
+            f"🔗 Лінк: ✅\n\n"
+            f"Введіть <b>опис для анонсу</b> в каналі (довільний текст)\n"
+            f"або натисніть <b>Пропустити</b> для стандартного шаблону:",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🧘📋 Список", callback_data="adm_list_personal")],
-                [InlineKeyboardButton("🧘➕ Ще один", callback_data="adm_add_personal")],
-                [InlineKeyboardButton("⚙️ Панель", callback_data="admin_panel")],
+                [InlineKeyboardButton("⏭ Пропустити", callback_data="acp_skip_desc")],
+                [InlineKeyboardButton("❌ Скасувати",  callback_data="admin_panel")],
             ]), parse_mode="HTML"
+        )
+        return
+
+    # ── Персональне: опис для анонсу (крок 4/5) → перехід до фото ──
+    if state == "personal_desc":
+        context.user_data["new_personal_desc"] = text
+        context.user_data["adm_state"] = "personal_photo"
+
+        date_str = context.user_data.get("new_personal_date", "")
+        time_str = context.user_data.get("new_personal_time", "00:00")
+        d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
+
+        await update.message.reply_text(
+            f"🧘➕ <b>Новий персональний слот</b> — крок 5/5\n\n"
+            f"📅 {d_fmt} о <b>{time_str}</b>\n"
+            f"🔗 Лінк: ✅\n📝 Опис: ✅\n\n"
+            f"Надішліть <b>фото для анонсу</b>\n"
+            f"або натисніть <b>Пропустити</b>:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏭ Пропустити", callback_data="acp_skip_photo")],
+                [InlineKeyboardButton("❌ Скасувати",  callback_data="admin_panel")],
+            ]), parse_mode="HTML"
+        )
+        return
+
+    # ── Персональне: очікується фото, а не текст ──
+    if state == "personal_photo":
+        await update.message.reply_text(
+            "📸 Надішліть <b>фото</b>, а не текст.\n"
+            "Або натисніть <b>Пропустити</b> вище ⬆️",
+            parse_mode="HTML"
         )
         return
 
@@ -1384,7 +1574,7 @@ async def cmd_add_workout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update.effective_user.id):
         return
     await update.message.reply_text(
-        "🏋️➕ <b>Нове групове тренування</b> — крок 1/3\n\nОберіть <b>назву</b>:",
+        "🏋️➕ <b>Нове групове тренування</b> — крок 1/6\n\nОберіть <b>назву</b>:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🧘‍♀️ Pilates",   callback_data="acg_title_Pilates")],
             [InlineKeyboardButton("🤸 Stretching", callback_data="acg_title_Stretching")],
@@ -1544,13 +1734,47 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
 
         await query.edit_message_text(
-            f"🏋️➕ <b>Нове групове тренування</b>\n\n"
+            f"🏋️➕ <b>Нове групове тренування</b> — крок 4/6\n\n"
             f"Назва: <b>{title}</b>\n📅 {d_fmt} о <b>{h:02d}:00</b>\n\n"
             "Введіть <b>посилання Google Meet</b>:",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("❌ Скасувати", callback_data="admin_panel")
             ]]), parse_mode="HTML"
         )
+        return
+
+    # ── Групове: пропустити опис → перейти до фото ──
+    if data == "acg_skip_desc":
+        if not _is_admin(user.id): return
+        context.user_data["new_desc"] = ""
+        context.user_data["adm_state"] = "group_photo"
+
+        title    = context.user_data.get("new_title", "—")
+        date_str = context.user_data.get("new_date", "")
+        time_str = context.user_data.get("new_time", "00:00")
+        d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
+
+        await query.edit_message_text(
+            f"🏋️➕ <b>Нове групове тренування</b> — крок 6/6\n\n"
+            f"Назва: <b>{title}</b>\n📅 {d_fmt} о <b>{time_str}</b>\n"
+            f"🔗 Лінк: ✅\n📝 Опис: пропущено\n\n"
+            f"Надішліть <b>фото для анонсу</b>\n"
+            f"або натисніть <b>Пропустити</b>:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏭ Пропустити", callback_data="acg_skip_photo")],
+                [InlineKeyboardButton("❌ Скасувати",  callback_data="admin_panel")],
+            ]), parse_mode="HTML"
+        )
+        return
+
+    # ── Групове: пропустити фото → фіналізація ──
+    if data == "acg_skip_photo":
+        if not _is_admin(user.id): return
+        context.user_data["new_photo"] = ""
+
+        async def _reply(text, markup, pm):
+            await query.edit_message_text(text, reply_markup=markup, parse_mode=pm)
+        await _finalize_group_workout(context, _reply)
         return
 
     # ── Додати персональне: календар + час ──
@@ -1575,13 +1799,46 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
 
         await query.edit_message_text(
-            f"🧘➕ <b>Новий персональний слот</b> — крок 3/3\n\n"
+            f"🧘➕ <b>Новий персональний слот</b> — крок 3/5\n\n"
             f"📅 {d_fmt} о <b>{h:02d}:00</b>\n\n"
             "Введіть <b>посилання Google Meet</b>:",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("❌ Скасувати", callback_data="admin_panel")
             ]]), parse_mode="HTML"
         )
+        return
+
+    # ── Персональне: пропустити опис → перейти до фото ──
+    if data == "acp_skip_desc":
+        if not _is_admin(user.id): return
+        context.user_data["new_personal_desc"] = ""
+        context.user_data["adm_state"] = "personal_photo"
+
+        date_str = context.user_data.get("new_personal_date", "")
+        time_str = context.user_data.get("new_personal_time", "00:00")
+        d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
+
+        await query.edit_message_text(
+            f"🧘➕ <b>Новий персональний слот</b> — крок 5/5\n\n"
+            f"📅 {d_fmt} о <b>{time_str}</b>\n"
+            f"🔗 Лінк: ✅\n📝 Опис: пропущено\n\n"
+            f"Надішліть <b>фото для анонсу</b>\n"
+            f"або натисніть <b>Пропустити</b>:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏭ Пропустити", callback_data="acp_skip_photo")],
+                [InlineKeyboardButton("❌ Скасувати",  callback_data="admin_panel")],
+            ]), parse_mode="HTML"
+        )
+        return
+
+    # ── Персональне: пропустити фото → фіналізація ──
+    if data == "acp_skip_photo":
+        if not _is_admin(user.id): return
+        context.user_data["new_personal_photo"] = ""
+
+        async def _reply_p(text, markup, pm):
+            await query.edit_message_text(text, reply_markup=markup, parse_mode=pm)
+        await _finalize_personal_slot(context, _reply_p)
         return
 
     # ── Списки та видалення ──
