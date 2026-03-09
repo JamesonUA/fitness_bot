@@ -28,7 +28,7 @@ from telegram.ext import (
 # ═══════════════════════════════════════════════════════════════
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-ADMIN_ID = int(os.environ["ADMIN_ID"])
+ADMIN_IDS = [int(x.strip()) for x in os.environ.get("ADMIN_IDS", os.environ.get("ADMIN_ID", "0")).split(",") if x.strip()]
 CHANNEL_ID = os.environ["CHANNEL_ID"]
 CARD_NUMBER = os.environ["CARD_NUMBER"]
 CARD_OWNER = os.environ["CARD_OWNER"]
@@ -597,7 +597,7 @@ pm  = PersonalManager()
 # ═══════════════════════════════════════════════════════════════
 
 def _is_admin(uid: int) -> bool:
-    return uid == ADMIN_ID
+    return uid in ADMIN_IDS
 
 def _fmt_dt(w: dict) -> str:
     dt = datetime.fromisoformat(w["datetime"])
@@ -1075,13 +1075,18 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💰 {price} грн ({pay_type})\n"
         f"🕐 {datetime.now(TIMEZONE).strftime('%d.%m.%Y %H:%M')}\n#pay{payment_id}"
     )
-    await context.bot.send_photo(
-        chat_id=ADMIN_ID, photo=photo.file_id, caption=caption,
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Підтвердити", callback_data=cb_ok),
-            InlineKeyboardButton("❌ Відхилити", callback_data=f"adm_no_{payment_id}_{user.id}"),
-        ]]), parse_mode="HTML"
-    )
+    admin_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Підтвердити", callback_data=cb_ok),
+        InlineKeyboardButton("❌ Відхилити", callback_data=f"adm_no_{payment_id}_{user.id}"),
+    ]])
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_photo(
+                chat_id=admin_id, photo=photo.file_id, caption=caption,
+                reply_markup=admin_kb, parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.warning(f"Не вдалось надіслати платіж адміну {admin_id}: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════
