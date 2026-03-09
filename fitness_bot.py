@@ -715,7 +715,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [
         [InlineKeyboardButton("👥 Групові тренування",     callback_data="group_menu")],
         [InlineKeyboardButton("🧑‍🏫 Персональне тренування", callback_data="personal_menu")],
-        [InlineKeyboardButton("👤 Мій статус",              callback_data="my_status")],
+        [InlineKeyboardButton("📋 Твої тренування",              callback_data="my_status")],
         [InlineKeyboardButton("📩 Зв'язок з тренером",     callback_data="contact_trainer")],
     ]
     if _is_admin(user.id):
@@ -737,7 +737,7 @@ async def _edit_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [
         [InlineKeyboardButton("👥 Групові тренування",     callback_data="group_menu")],
         [InlineKeyboardButton("🧑‍🏫 Персональне тренування", callback_data="personal_menu")],
-        [InlineKeyboardButton("👤 Мій статус",              callback_data="my_status")],
+        [InlineKeyboardButton("📋 Твої тренування",              callback_data="my_status")],
         [InlineKeyboardButton("📩 Зв'язок з тренером",     callback_data="contact_trainer")],
     ]
     if _is_admin(user.id):
@@ -758,7 +758,7 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👥 <b>Групові тренування</b>\n\n"
         f"Вартість: <b>{GROUP_PRICE} грн</b>\n\nОберіть дію:",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🗓 Заплановані групові тренування", callback_data="group_schedule")],
+            [InlineKeyboardButton("🗓 Календар групових тренувань", callback_data="group_schedule")],
             [InlineKeyboardButton("💳 Оплатити тренування",            callback_data="group_pay_start")],
             [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")],
             [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
@@ -778,7 +778,7 @@ async def show_group_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE
             ]), parse_mode="HTML"
         ); return
 
-    lines = ["🗓 <b>Заплановані групові тренування:</b>\n"]
+    lines = ["🗓 <b>Календар групових тренувань:</b>\n"]
     for w in upcoming[:5]:
         cnt = wm.count_paid(w["id"])
         lines.append(f"• <b>{w['title']}</b>\n  📅 {_fmt_dt(w)}  👥 {cnt} оплачено")
@@ -1046,7 +1046,9 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["waiting_screenshot"] = False
 
     await update.message.reply_text(
-        "✅ <b>Скріншот отримано!</b>\nПлатіж на перевірці (до 1–3 годин) 🙏",
+        "✅ <b>Скріншот отримано!</b>\nПлатіж на перевірці (до 1–3 годин) 🙏\n\n"
+        "<i>⚠️ Зверніть увагу: у разі пропуску оплаченого тренування "
+        "з особистих причин кошти не повертаються.</i>",
         reply_markup=HOME_MARKUP, parse_mode="HTML"
     )
 
@@ -1665,21 +1667,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+        REFUND_NOTE = "\n\n<i>⚠️ У разі пропуску оплаченого тренування з особистих причин кошти не повертаються.</i>"
+
         if pay_type == "group":
             wid = int(item_id) if item_id != "0" else None
             workout = wm.get(wid) if wid else None
             if workout:
                 txt = (f"🎉 <b>Оплату підтверджено!</b>\n\n🏋️ <b>{workout['title']}</b>\n"
-                       f"📅 {_fmt_dt(workout)}\n\n🔗 {workout['teams_link']}\n\n<i>До зустрічі! 💪</i>")
+                       f"📅 {_fmt_dt(workout)}\n\n🔗 {workout['teams_link']}\n\n"
+                       f"<i>До зустрічі! 💪</i>{REFUND_NOTE}")
             else:
-                txt = "🎉 <b>Оплату підтверджено!</b>"
+                txt = f"🎉 <b>Оплату підтверджено!</b>{REFUND_NOTE}"
         else:
             slot = pm.get(item_id)
             if slot:
                 txt = (f"🎉 <b>Оплату підтверджено!</b>\n\n🧑‍🏫 Персональне\n"
-                       f"📅 {_fmt_slot(slot)}\n\n🔗 {slot['teams_link']}\n\n<i>До зустрічі! 💪</i>")
+                       f"📅 {_fmt_slot(slot)}\n\n🔗 {slot['teams_link']}\n\n"
+                       f"<i>До зустрічі! 💪</i>{REFUND_NOTE}")
             else:
-                txt = "🎉 <b>Оплату підтверджено!</b>"
+                txt = f"🎉 <b>Оплату підтверджено!</b>{REFUND_NOTE}"
 
         await context.bot.send_message(client_uid, txt, parse_mode="HTML",
                                        reply_markup=HOME_MARKUP, disable_web_page_preview=False)
