@@ -522,7 +522,8 @@ class PersonalManager:
     def available_dates_in_month(self, year: int, month: int) -> set[int]:
         days, now = set(), datetime.now(TIMEZONE)
         for s in self.slots:
-            if s["booked_by"] is not None:
+            # Слот недоступний тільки якщо оплачений
+            if s["booked_by"] is not None and pay.has_paid_personal(s["booked_by"], s["id"]):
                 continue
             try:
                 d = datetime.strptime(s["date"], "%Y-%m-%d")
@@ -537,7 +538,10 @@ class PersonalManager:
     def slots_for_date(self, date_str: str) -> list[dict]:
         now, result = datetime.now(TIMEZONE), []
         for s in self.slots:
-            if s["date"] != date_str or s["booked_by"] is not None:
+            if s["date"] != date_str:
+                continue
+            # Слот недоступний тільки якщо оплачений
+            if s["booked_by"] is not None and pay.has_paid_personal(s["booked_by"], s["id"]):
                 continue
             try:
                 dt_full = datetime.strptime(f"{s['date']} {s['time']}", "%Y-%m-%d %H:%M").replace(tzinfo=TIMEZONE)
@@ -850,10 +854,10 @@ async def show_personal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.edit_message_text(
         "🧑‍🏫 <b>Персональне тренування</b>\n\n"
         f"Вартість: <b>{PERSONAL_PRICE} грн</b>\n"
-        "Формат: 1-на-1 з тренером через Google Meet\n\nОберіть дію:",
+        "Формат: 1-на-1 з тренером через Google Meet\n\n"
+        "Оберіть дату та час у календарі, а потім оплатіть:",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📅 Запис на тренування",  callback_data="personal_calendar")],
-            [InlineKeyboardButton("💳 Оплатити тренування",  callback_data="personal_pay_start")],
+            [InlineKeyboardButton("📅 Обрати та оплатити",  callback_data="personal_calendar")],
             [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")],
             [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
         ]), parse_mode="HTML"
@@ -884,7 +888,7 @@ async def show_day_slots(update: Update, context: ContextTypes.DEFAULT_TYPE, yea
         await query.answer("На цей день слотів немає", show_alert=True); return
 
     d_fmt = f"{day:02d}.{month:02d}.{year}"
-    kb = [[InlineKeyboardButton(f"🕐 {s['time']}", callback_data=f"pslot_book_{s['id']}")] for s in slots]
+    kb = [[InlineKeyboardButton(f"🕐 {s['time']} — оплатити", callback_data=f"pslot_book_{s['id']}")] for s in slots]
     kb.append([InlineKeyboardButton("◀️ До календаря", callback_data="personal_calendar")])
     kb.append([InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")])
 
@@ -900,43 +904,31 @@ async def book_personal_slot(update: Update, context: ContextTypes.DEFAULT_TYPE,
     slot  = pm.get(sid)
     if not slot:
         await query.answer("Слот не знайдено", show_alert=True); return
-    if pm.is_booked(sid):
-        await query.answer("Слот вже заброньовано", show_alert=True); return
+    # Перевірка: чи вже оплачений іншим клієнтом
+    if slot["booked_by"] is not None and pay.has_paid_personal(slot["booked_by"], sid):
+        await query.answer("Цей слот вже оплачений іншим клієнтом", show_alert=True); return
 
-    pm.book(sid, user.id)
+    # Одразу переходимо до оплати (без бронювання)
+    pid = pay.set_pending(user.id, slot_id=sid, pay_type="personal")
+    context.user_data.update(waiting_screenshot=True, payment_id=pid, pay_type="personal", slot_id=sid)
+
     await query.edit_message_text(
-        f"✅ <b>Записано!</b>\n\n📅 {_fmt_slot(slot)}\n💰 <b>{PERSONAL_PRICE} грн</b>\n\n"
-        "Оплатіть, щоб отримати посилання на Google Meet.",
+        f"💳 <b>Оплата персонального тренування</b>\n\n"
+        f"📅 {_fmt_slot(slot)}\nСума: <b>{PERSONAL_PRICE} грн</b>\n\n"
+        f"Переказати на картку:\n<code>{CARD_NUMBER}</code>\n"
+        f"Отримувач: <b>{CARD_OWNER}</b>\n\n"
+        f"Надішліть 📸 <b>скріншот підтвердження</b>.\n"
+        f"<i>⏱ Перевірка до 1–3 годин.</i>",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("💳 Оплатити зараз", callback_data=f"ppay_slot_{sid}")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="personal_menu")],
-            [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="personal_calendar"),
+             InlineKeyboardButton("🏠 Меню", callback_data="main_menu")],
         ]), parse_mode="HTML"
     )
 
 
 async def personal_pay_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user  = update.effective_user
-    booked = [s for s in pm.all_upcoming() if s["booked_by"] == user.id and not pay.has_paid_personal(user.id, s["id"])]
-
-    if not booked:
-        await query.edit_message_text(
-            "😔 Немає неоплачених бронювань.\nСпочатку запишіться через календар.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📅 Запис", callback_data="personal_calendar")],
-                [InlineKeyboardButton("◀️ Назад", callback_data="personal_menu")],
-                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
-            ])); return
-
-    kb = [[InlineKeyboardButton(f"🕐 {_fmt_slot(s)}", callback_data=f"ppay_slot_{s['id']}")] for s in booked]
-    kb.append([InlineKeyboardButton("◀️ Назад", callback_data="personal_menu")])
-    kb.append([InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")])
-
-    await query.edit_message_text(
-        f"💳 <b>Оплата персонального тренування</b>\n\nВартість: <b>{PERSONAL_PRICE} грн</b>\n\nОберіть:",
-        reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
-    )
+    """Перенаправляє до календаря для вибору слоту та оплати."""
+    await show_personal_calendar(update, context)
 
 
 async def personal_pay_details(update: Update, context: ContextTypes.DEFAULT_TYPE, sid: str):
@@ -957,7 +949,7 @@ async def personal_pay_details(update: Update, context: ContextTypes.DEFAULT_TYP
         f"Надішліть 📸 <b>скріншот підтвердження</b>.\n"
         f"<i>⏱ Перевірка до 1–3 годин.</i>",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("◀️ Назад", callback_data="personal_pay_start"),
+            [InlineKeyboardButton("◀️ Назад", callback_data="personal_calendar"),
              InlineKeyboardButton("🏠 Меню", callback_data="main_menu")],
         ]), parse_mode="HTML"
     )
@@ -986,16 +978,14 @@ async def show_my_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(f"  ❌ {w['title']} ({_fmt_dt(w)})")
 
     lines.append("\n<b>🧑‍🏫 Персональні тренування:</b>")
-    user_personal = [s for s in pm.all_upcoming() if s["booked_by"] == user.id]
+    user_personal = [s for s in pm.all_upcoming()
+                     if s["booked_by"] == user.id and pay.has_paid_personal(user.id, s["id"])]
     if not user_personal:
         lines.append("  Записів немає.")
     else:
         for s in user_personal[:5]:
-            if pay.has_paid_personal(user.id, s["id"]):
-                lines.append(f"  ✅ {_fmt_slot(s)}")
-                lines.append(f"  🔗 <a href=\"{s['teams_link']}\">Підключитись</a>")
-            else:
-                lines.append(f"  ⏳ {_fmt_slot(s)}")
+            lines.append(f"  ✅ {_fmt_slot(s)}")
+            lines.append(f"  🔗 <a href=\"{s['teams_link']}\">Підключитись</a>")
 
     await query.edit_message_text(
         "\n".join(lines),
@@ -1686,6 +1676,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             slot = pm.get(item_id)
             if slot:
+                # Закріплюємо слот за клієнтом після підтвердження оплати
+                pm.book(item_id, client_uid)
                 txt = (f"🎉 <b>Оплату підтверджено!</b>\n\n🧑‍🏫 Персональне\n"
                        f"📅 {_fmt_slot(slot)}\n\n🔗 {slot['teams_link']}\n\n"
                        f"<i>До зустрічі! 💪</i>{REFUND_NOTE}")
