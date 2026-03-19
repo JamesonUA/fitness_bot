@@ -30,6 +30,7 @@ from telegram.ext import (
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_IDS = [int(x.strip()) for x in os.environ.get("ADMIN_IDS", os.environ.get("ADMIN_ID", "0")).split(",") if x.strip()]
 CHANNEL_ID = os.environ["CHANNEL_ID"]
+CHANNEL_TOPIC_ID = int(os.environ.get("CHANNEL_TOPIC_ID", "0"))
 CARD_NUMBER = os.environ["CARD_NUMBER"]
 CARD_OWNER = os.environ["CARD_OWNER"]
 
@@ -1192,11 +1193,13 @@ async def _finalize_group_workout(context, reply_func):
         if photo_id:
             msg = await context.bot.send_photo(
                 chat_id=CHANNEL_ID, photo=photo_id,
-                caption=channel_text, parse_mode="HTML"
+                caption=channel_text, parse_mode="HTML",
+                message_thread_id=CHANNEL_TOPIC_ID or None,
             )
         else:
             msg = await context.bot.send_message(
-                chat_id=CHANNEL_ID, text=channel_text, parse_mode="HTML"
+                chat_id=CHANNEL_ID, text=channel_text, parse_mode="HTML",
+                message_thread_id=CHANNEL_TOPIC_ID or None,
             )
         wm.set_channel_msg(workout["id"], msg.message_id)
         ch_note = f"✅ Анонс у {CHANNEL_ID}"
@@ -1249,11 +1252,13 @@ async def _finalize_personal_slot(context, reply_func):
         if photo_id:
             msg = await context.bot.send_photo(
                 chat_id=CHANNEL_ID, photo=photo_id,
-                caption=channel_text, parse_mode="HTML"
+                caption=channel_text, parse_mode="HTML",
+                message_thread_id=CHANNEL_TOPIC_ID or None,
             )
         else:
             msg = await context.bot.send_message(
-                chat_id=CHANNEL_ID, text=channel_text, parse_mode="HTML"
+                chat_id=CHANNEL_ID, text=channel_text, parse_mode="HTML",
+                message_thread_id=CHANNEL_TOPIC_ID or None,
             )
         ch_note = f"✅ Анонс у {CHANNEL_ID}"
     except Exception as e:
