@@ -856,7 +856,7 @@ async def show_personal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "🧑‍🏫 <b>Персональне тренування</b>\n\n"
         f"Вартість: <b>{PERSONAL_PRICE} грн</b>\n"
         "Формат: 1-на-1 з тренером через Google Meet\n\n"
-        "Оберіть дату та час у календарі, а потім оплатіть:",
+        "Оберіть зручний для вас час і дату з доступного у розкладі:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📅 Обрати та оплатити",  callback_data="personal_calendar")],
             [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")],
