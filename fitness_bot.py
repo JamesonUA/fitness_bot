@@ -40,8 +40,8 @@ PERSONAL_PRICE = int(os.environ.get("PERSONAL_PRICE", "500"))
 TIMEZONE = ZoneInfo("Europe/Kyiv")
 
 # GitHub Gist — хмарне сховище для бекапів
-GITHUB_TOKEN   = os.environ.get("GITHUB_TOKEN", "")       # Personal Access Token з правом "gist"
-GIST_ID_FILE   = ".gist_id"                                # локально зберігає ID створеного Gist
+GITHUB_TOKEN   = os.environ.get("GITHUB_TOKEN", "")
+GIST_ID_FILE   = ".gist_id"
 
 LOCAL_PAYMENTS_FILE = "fit_payments.json"
 LOCAL_WORKOUTS_FILE = "fit_workouts.json"
@@ -64,18 +64,10 @@ logger = logging.getLogger(__name__)
 
 import time as _time
 
-BACKUP_THROTTLE_SEC = int(os.environ.get("BACKUP_THROTTLE_SEC", "60"))  # 1 хв
+BACKUP_THROTTLE_SEC = int(os.environ.get("BACKUP_THROTTLE_SEC", "60"))
 
 
 class GistStorageManager:
-    """
-    Зберігає JSON-дані у GitHub Gist (приватний) як хмарний бекап.
-
-    Схема:
-      save()  → локальний JSON (миттєво) + Gist (фоновий thread, з throttle)
-      load()  → Gist → локальний JSON (резерв)
-    """
-
     _gist_id: str | None = None
     _gist_lock = threading.Lock()
 
@@ -85,9 +77,7 @@ class GistStorageManager:
         self._last_upload  = 0.0
         self._pending_data = None
         self._lock         = threading.Lock()
-        self._ever_uploaded = False  # перший аплоад завжди без throttle
-
-    # ── GitHub API ──
+        self._ever_uploaded = False
 
     @classmethod
     def _gh_headers(cls) -> dict:
@@ -182,9 +172,8 @@ class GistStorageManager:
                 return None
             content = f.get("content", "{}")
             data = json.loads(content)
-            # Порожній dict {} — це валідні дані (просто ще нічого немає)
             if isinstance(data, dict):
-                logger.info(f"[{self.gist_filename}] ← Gist OK ({len(data)} ключів)")
+                logger.info(f"[{self.gist_filename}] <- Gist OK ({len(data)} ключів)")
                 return data
             return None
         except Exception as e:
@@ -204,7 +193,7 @@ class GistStorageManager:
                 timeout=30,
             )
             if resp.status_code == 200:
-                logger.info(f"[{self.gist_filename}] → Gist OK")
+                logger.info(f"[{self.gist_filename}] -> Gist OK")
             else:
                 logger.error(f"Gist update [{self.gist_filename}]: {resp.status_code} {resp.text[:200]}")
         except Exception as e:
@@ -213,7 +202,6 @@ class GistStorageManager:
     def _throttled_upload(self, data: dict):
         with self._lock:
             now = _time.time()
-            # Перший аплоад — завжди одразу (без throttle)
             if self._ever_uploaded and now - self._last_upload < BACKUP_THROTTLE_SEC:
                 self._pending_data = data
                 return
@@ -222,33 +210,24 @@ class GistStorageManager:
             self._ever_uploaded = True
         self._upload_to_gist(data)
 
-    # ── Публічні методи ──
-
     def load_raw(self) -> dict | None:
-        # 1. Gist (основне джерело)
         data = self._download_from_gist()
-
-        # 2. Локальний файл (резерв, наприклад якщо GitHub недоступний)
         if data is None and os.path.exists(self.local_file):
             try:
                 with open(self.local_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                logger.info(f"[{self.gist_filename}] ← локальний файл (резерв)")
+                logger.info(f"[{self.gist_filename}] <- локальний файл (резерв)")
             except Exception as e:
                 logger.error(f"Локальний файл [{self.gist_filename}]: {e}")
-
         return data
 
     def save_raw(self, data: dict):
-        # 1. Локально — завжди, миттєво
         try:
             with open(self.local_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"Локальне збереження [{self.gist_filename}]: {e}")
-
-        # 2. Gist — у фоні, з throttle (перший раз — одразу)
-        data_copy = json.loads(json.dumps(data, ensure_ascii=False))  # deep copy
+        data_copy = json.loads(json.dumps(data, ensure_ascii=False))
         threading.Thread(target=self._throttled_upload, args=(data_copy,), daemon=True).start()
 
     def flush_pending(self):
@@ -365,7 +344,6 @@ class PaymentManager:
         return [int(k) for k in self.payments.keys()]
 
     def get_paid_users_info(self, workout_id: int) -> list[dict]:
-        """Повертає список {uid, username, full_name} тих, хто оплатив workout_id."""
         result = []
         for k, v in self.payments.items():
             if workout_id in v.get("paid_workouts", []):
@@ -423,7 +401,6 @@ class WorkoutManager:
         self.save()
 
     def update_datetime(self, wid: int, new_dt: datetime):
-        """Змінює час тренування, скидає прапорці нагадувань."""
         for w in self.workouts:
             if w["id"] == wid:
                 w["datetime"] = new_dt.isoformat()
@@ -440,6 +417,34 @@ class WorkoutManager:
         now = datetime.now(TIMEZONE).isoformat()
         return sorted([w for w in self.workouts if w["datetime"] > now], key=lambda x: x["datetime"])
 
+    def available_dates_in_month(self, year: int, month: int) -> set[int]:
+        now = datetime.now(TIMEZONE)
+        days = set()
+        for w in self.workouts:
+            try:
+                dt = datetime.fromisoformat(w["datetime"])
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=TIMEZONE)
+                if dt.year == year and dt.month == month and dt > now:
+                    days.add(dt.day)
+            except Exception:
+                pass
+        return days
+
+    def workouts_for_date(self, date_str: str) -> list[dict]:
+        now = datetime.now(TIMEZONE)
+        result = []
+        for w in self.workouts:
+            try:
+                dt = datetime.fromisoformat(w["datetime"])
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=TIMEZONE)
+                if dt.strftime("%Y-%m-%d") == date_str and dt > now:
+                    result.append(w)
+            except Exception:
+                pass
+        return sorted(result, key=lambda x: x["datetime"])
+
     def get_pending_notifications(self) -> list[tuple[dict, str]]:
         now = datetime.now(TIMEZONE)
         result, changed = [], False
@@ -452,7 +457,6 @@ class WorkoutManager:
                 result.append((w, "1h")); w["notified_1h"] = True; changed = True
             if not w["notified_start"] and -300 <= diff <= 300:
                 result.append((w, "start")); w["notified_start"] = True; changed = True
-            # Повідомлення після завершення тренування (60 хв тренування + 5 хв = 65 хв після старту)
             if not w.get("notified_end", False) and -4200 <= diff <= -3600:
                 result.append((w, "end")); w["notified_end"] = True; changed = True
         if changed:
@@ -523,7 +527,6 @@ class PersonalManager:
     def available_dates_in_month(self, year: int, month: int) -> set[int]:
         days, now = set(), datetime.now(TIMEZONE)
         for s in self.slots:
-            # Слот недоступний тільки якщо оплачений
             if s["booked_by"] is not None and pay.has_paid_personal(s["booked_by"], s["id"]):
                 continue
             try:
@@ -541,7 +544,6 @@ class PersonalManager:
         for s in self.slots:
             if s["date"] != date_str:
                 continue
-            # Слот недоступний тільки якщо оплачений
             if s["booked_by"] is not None and pay.has_paid_personal(s["booked_by"], s["id"]):
                 continue
             try:
@@ -580,7 +582,6 @@ class PersonalManager:
                 result.append((s, "1h")); s["notified_1h"] = True; changed = True
             if not s.get("notified_start", False) and -300 <= diff <= 300:
                 result.append((s, "start")); s["notified_start"] = True; changed = True
-            # Повідомлення після завершення (60 хв + 5 хв = 65 хв після старту)
             if not s.get("notified_end", False) and -4200 <= diff <= -3600:
                 result.append((s, "end")); s["notified_end"] = True; changed = True
         if changed:
@@ -624,20 +625,17 @@ MONTH_NAMES_UK = {
 }
 DAY_HEADERS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 
-# Кнопка «Головне меню» для вставки в будь-яке повідомлення
 HOME_BTN = [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")]
 HOME_MARKUP = InlineKeyboardMarkup([HOME_BTN])
 
 
 def _build_calendar(year: int, month: int, available_days: set[int],
                      cb_prefix: str) -> list[list[InlineKeyboardButton]]:
-    """Календар для клієнта (персональні тренування) — без навігації."""
     kb = []
     kb.append([InlineKeyboardButton(
         f"📅 {MONTH_NAMES_UK[month]} {year}", callback_data="cal_ignore"
     )])
     kb.append([InlineKeyboardButton(d, callback_data="cal_ignore") for d in DAY_HEADERS])
-
     for week in calendar.monthcalendar(year, month):
         row = []
         for day in week:
@@ -655,7 +653,6 @@ def _build_calendar(year: int, month: int, available_days: set[int],
 
 def _build_admin_calendar(year: int, month: int, cb_prefix: str,
                            nav_prefix: str = "") -> list[list[InlineKeyboardButton]]:
-    """Календар для адміна — всі майбутні дні клікабельні. Стрілки ◀️▶️ тільки якщо nav_prefix задано."""
     now = datetime.now(TIMEZONE)
     future_days = set()
     _, days_in_month = calendar.monthrange(year, month)
@@ -663,7 +660,6 @@ def _build_admin_calendar(year: int, month: int, cb_prefix: str,
         day_date = datetime(year, month, d, 23, 59, tzinfo=TIMEZONE)
         if day_date >= now:
             future_days.add(d)
-
     kb = []
     if nav_prefix:
         prev_m = month - 1 if month > 1 else 12
@@ -680,7 +676,6 @@ def _build_admin_calendar(year: int, month: int, cb_prefix: str,
             f"📅 {MONTH_NAMES_UK[month]} {year}", callback_data="cal_ignore"
         )])
     kb.append([InlineKeyboardButton(d, callback_data="cal_ignore") for d in DAY_HEADERS])
-
     for week in calendar.monthcalendar(year, month):
         row = []
         for day in week:
@@ -697,7 +692,6 @@ def _build_admin_calendar(year: int, month: int, cb_prefix: str,
 
 
 def _build_time_picker(cb_prefix: str) -> list[list[InlineKeyboardButton]]:
-    """Сітка годин 00:00 — 23:00 (4 колонки)."""
     kb, row = [], []
     for h in range(24):
         row.append(InlineKeyboardButton(f"{h:02d}:00", callback_data=f"{cb_prefix}_{h}"))
@@ -720,7 +714,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [
         [InlineKeyboardButton("👥 Групові тренування",     callback_data="group_menu")],
         [InlineKeyboardButton("🧑‍🏫 Персональне тренування", callback_data="personal_menu")],
-        [InlineKeyboardButton("📋 Твої тренування",              callback_data="my_status")],
+        [InlineKeyboardButton("📋 Твої тренування",        callback_data="my_status")],
         [InlineKeyboardButton("📩 Зв'язок з тренером",     callback_data="contact_trainer")],
     ]
     if _is_admin(user.id):
@@ -742,7 +736,7 @@ async def _edit_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [
         [InlineKeyboardButton("👥 Групові тренування",     callback_data="group_menu")],
         [InlineKeyboardButton("🧑‍🏫 Персональне тренування", callback_data="personal_menu")],
-        [InlineKeyboardButton("📋 Твої тренування",              callback_data="my_status")],
+        [InlineKeyboardButton("📋 Твої тренування",        callback_data="my_status")],
         [InlineKeyboardButton("📩 Зв'язок з тренером",     callback_data="contact_trainer")],
     ]
     if _is_admin(user.id):
@@ -764,7 +758,6 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Вартість: <b>{GROUP_PRICE} грн</b>\n\nОберіть дію:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🗓 Календар групових тренувань", callback_data="group_schedule")],
-            [InlineKeyboardButton("💳 Оплатити тренування",            callback_data="group_pay_start")],
             [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")],
             [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
         ]), parse_mode="HTML"
@@ -772,9 +765,11 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_group_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query    = update.callback_query
-    upcoming = wm.upcoming()
-    if not upcoming:
+    query = update.callback_query
+    now   = datetime.now(TIMEZONE)
+    available = wm.available_dates_in_month(now.year, now.month)
+
+    if not available:
         await query.edit_message_text(
             "🗓 <b>Групові тренування</b>\n\nНаразі тренувань немає. Стежте за каналом! 💪",
             reply_markup=InlineKeyboardMarkup([
@@ -783,40 +778,42 @@ async def show_group_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE
             ]), parse_mode="HTML"
         ); return
 
-    lines = ["🗓 <b>Календар групових тренувань:</b>\n"]
-    for w in upcoming[:5]:
-        cnt = wm.count_paid(w["id"])
-        lines.append(f"• <b>{w['title']}</b>\n  📅 {_fmt_dt(w)}  👥 {cnt} оплачено")
+    cal_kb = _build_calendar(now.year, now.month, available, cb_prefix="gcal_day")
+    cal_kb.append([InlineKeyboardButton("◀️ Назад", callback_data="group_menu")])
+    cal_kb.append([InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")])
 
     await query.edit_message_text(
-        "\n\n".join(lines),
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("💳 Оплатити тренування", callback_data="group_pay_start")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="group_menu")],
-            [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
-        ]), parse_mode="HTML"
+        "🗓 <b>Календар групових тренувань</b>\n\nДні з ✅ — є тренування. Натисніть на день.",
+        reply_markup=InlineKeyboardMarkup(cal_kb), parse_mode="HTML"
     )
 
 
-async def group_pay_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user  = update.effective_user
-    upcoming  = wm.upcoming()
-    available = [w for w in upcoming if not pay.has_paid_group(user.id, w["id"])]
+async def show_group_day_workouts(update: Update, context: ContextTypes.DEFAULT_TYPE, year: int, month: int, day: int):
+    query    = update.callback_query
+    user     = update.effective_user
+    date_str = f"{year}-{month:02d}-{day:02d}"
+    workouts = wm.workouts_for_date(date_str)
 
-    if not upcoming or not available:
-        msg = "😔 Немає тренувань." if not upcoming else "✅ Всі тренування оплачено!"
-        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("◀️ Назад", callback_data="group_menu")],
-            [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
-        ])); return
+    if not workouts:
+        await query.answer("На цей день тренувань немає", show_alert=True); return
 
-    kb = [[InlineKeyboardButton(f"{w['title']} — {_fmt_dt(w)}", callback_data=f"gpay_sel_{w['id']}")] for w in available]
-    kb.append([InlineKeyboardButton("◀️ Назад", callback_data="group_menu")])
+    d_fmt = f"{day:02d}.{month:02d}.{year}"
+    kb = []
+    for w in workouts:
+        dt = datetime.fromisoformat(w["datetime"])
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=TIMEZONE)
+        time_str = dt.strftime("%H:%M")
+        already_paid = pay.has_paid_group(user.id, w["id"])
+        label = f"✅ {w['title']} о {time_str}" if already_paid else f"🏋️ {w['title']} о {time_str}"
+        kb.append([InlineKeyboardButton(label, callback_data=f"gpay_sel_{w['id']}")])
+
+    kb.append([InlineKeyboardButton("◀️ До календаря", callback_data="group_schedule")])
     kb.append([InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")])
 
     await query.edit_message_text(
-        f"💳 <b>Оплата групового тренування</b>\n\nВартість: <b>{GROUP_PRICE} грн</b>\n\nОберіть:",
+        f"🗓 <b>{d_fmt}</b> — тренування:\n\nВартість: <b>{GROUP_PRICE} грн</b>\n"
+        f"<i>✅ — вже оплачено</i>",
         reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
     )
 
@@ -827,6 +824,9 @@ async def group_pay_details(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     workout = wm.get(wid)
     if not workout:
         await query.answer("Не знайдено", show_alert=True); return
+
+    if pay.has_paid_group(user.id, wid):
+        await query.answer("✅ Ти вже оплатив це тренування!", show_alert=True); return
 
     pid = pay.set_pending(user.id, workout_id=wid, pay_type="group")
     context.user_data.update(waiting_screenshot=True, payment_id=pid, pay_type="group", workout_id=wid)
@@ -840,7 +840,7 @@ async def group_pay_details(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         f"Після переказу надішліть 📸 <b>скріншот підтвердження</b>.\n"
         f"<i>⏱ Очікуйте підтвердження вашої участі у тренуванні.</i>",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("◀️ Назад", callback_data="group_pay_start"),
+            [InlineKeyboardButton("◀️ Назад", callback_data="group_schedule"),
              InlineKeyboardButton("🏠 Меню", callback_data="main_menu")],
         ]), parse_mode="HTML"
     )
@@ -858,7 +858,7 @@ async def show_personal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "Формат: 1-на-1 з тренером через Google Meet\n\n"
         "Оберіть зручний для вас час і дату з доступного у розкладі:",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📅 Обрати та оплатити",  callback_data="personal_calendar")],
+            [InlineKeyboardButton("📅 Обрати та оплатити", callback_data="personal_calendar")],
             [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")],
             [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
         ]), parse_mode="HTML"
@@ -874,7 +874,7 @@ async def show_personal_calendar(update: Update, context: ContextTypes.DEFAULT_T
     cal_kb.append([InlineKeyboardButton("◀️ Назад", callback_data="personal_menu")])
     cal_kb.append([InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")])
 
-    hint = "Дні з ✅ — доступні. Натисніть на день." if available else "На цей місяць вільних слотів немає."
+    hint = "Дні з ✅ — доступні. Натисніть на день." if available else "На цей місяць вільних варіантів немає."
     await query.edit_message_text(
         f"📅 <b>Запис на персональне тренування</b>\n\n{hint}",
         reply_markup=InlineKeyboardMarkup(cal_kb), parse_mode="HTML"
@@ -886,7 +886,7 @@ async def show_day_slots(update: Update, context: ContextTypes.DEFAULT_TYPE, yea
     date_str = f"{year}-{month:02d}-{day:02d}"
     slots    = pm.slots_for_date(date_str)
     if not slots:
-        await query.answer("На цей день слотів немає", show_alert=True); return
+        await query.answer("На цей день варіантів немає", show_alert=True); return
 
     d_fmt = f"{day:02d}.{month:02d}.{year}"
     kb = [[InlineKeyboardButton(f"🕐 {s['time']} — оплатити", callback_data=f"pslot_book_{s['id']}")] for s in slots]
@@ -894,7 +894,7 @@ async def show_day_slots(update: Update, context: ContextTypes.DEFAULT_TYPE, yea
     kb.append([InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")])
 
     await query.edit_message_text(
-        f"📅 <b>{d_fmt}</b> — доступні слоти:\n\nВартість: <b>{PERSONAL_PRICE} грн</b>",
+        f"📅 <b>{d_fmt}</b> — доступні варіанти:\n\nВартість: <b>{PERSONAL_PRICE} грн</b>",
         reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
     )
 
@@ -904,12 +904,10 @@ async def book_personal_slot(update: Update, context: ContextTypes.DEFAULT_TYPE,
     user  = update.effective_user
     slot  = pm.get(sid)
     if not slot:
-        await query.answer("Слот не знайдено", show_alert=True); return
-    # Перевірка: чи вже оплачений іншим клієнтом
+        await query.answer("Варіант не знайдено", show_alert=True); return
     if slot["booked_by"] is not None and pay.has_paid_personal(slot["booked_by"], sid):
-        await query.answer("Цей слот вже оплачений іншим клієнтом", show_alert=True); return
+        await query.answer("Цей варіант вже оплачений іншим клієнтом", show_alert=True); return
 
-    # Одразу переходимо до оплати (без бронювання)
     pid = pay.set_pending(user.id, slot_id=sid, pay_type="personal")
     context.user_data.update(waiting_screenshot=True, payment_id=pid, pay_type="personal", slot_id=sid)
 
@@ -928,7 +926,6 @@ async def book_personal_slot(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 
 async def personal_pay_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Перенаправляє до календаря для вибору слоту та оплати."""
     await show_personal_calendar(update, context)
 
 
@@ -937,7 +934,7 @@ async def personal_pay_details(update: Update, context: ContextTypes.DEFAULT_TYP
     user  = update.effective_user
     slot  = pm.get(sid)
     if not slot:
-        await query.answer("Слот не знайдено", show_alert=True); return
+        await query.answer("Варіант не знайдено", show_alert=True); return
 
     pid = pay.set_pending(user.id, slot_id=sid, pay_type="personal")
     context.user_data.update(waiting_screenshot=True, payment_id=pid, pay_type="personal", slot_id=sid)
@@ -1005,21 +1002,17 @@ async def show_my_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    # ── Адмін: фото для анонсу групового тренування (крок 6/6) ──
     if context.user_data.get("adm_state") == "group_photo" and _is_admin(user.id):
         photo = update.message.photo[-1]
         context.user_data["new_photo"] = photo.file_id
-
         async def _reply(text, markup, pm):
             await update.message.reply_text(text, reply_markup=markup, parse_mode=pm)
         await _finalize_group_workout(context, _reply)
         return
 
-    # ── Адмін: фото для анонсу персонального тренування (крок 5/5) ──
     if context.user_data.get("adm_state") == "personal_photo" and _is_admin(user.id):
         photo = update.message.photo[-1]
         context.user_data["new_personal_photo"] = photo.file_id
-
         async def _reply_p(text, markup, pm):
             await update.message.reply_text(text, reply_markup=markup, parse_mode=pm)
         await _finalize_personal_slot(context, _reply_p)
@@ -1030,8 +1023,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     payment_id = context.user_data.get("payment_id")
     pay_type   = context.user_data.get("pay_type", "group")
     if not payment_id:
-        await update.message.reply_text("⚠️ Немає активного платежу.",
-                                       reply_markup=HOME_MARKUP); return
+        await update.message.reply_text("⚠️ Немає активного платежу.", reply_markup=HOME_MARKUP); return
 
     photo = update.message.photo[-1]
     context.user_data["waiting_screenshot"] = False
@@ -1110,9 +1102,6 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ── Адмін: додати ГРУПОВЕ тренування ──
-# Крок 1: назва (текст) → Крок 2: дата (календар) → Крок 3: час (сітка) → Крок 4: Teams-лінк (текст)
-
 async def adm_add_group_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not _is_admin(update.effective_user.id):
@@ -1120,11 +1109,11 @@ async def adm_add_group_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.edit_message_text(
         "🏋️➕ <b>Нове групове тренування</b> — крок 1/6\n\nОберіть <b>назву</b>:",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🧘‍♀️ Pilates",   callback_data="acg_title_Pilates")],
-            [InlineKeyboardButton("🤸 Stretching", callback_data="acg_title_Stretching")],
-            [InlineKeyboardButton("🌸 Women's health", callback_data="acg_title_Women's health")],
-            [InlineKeyboardButton("💆 MFR",            callback_data="acg_title_MFR")],
-            [InlineKeyboardButton("❌ Скасувати",  callback_data="admin_panel")],
+            [InlineKeyboardButton("🧘‍♀️ Pilates",        callback_data="acg_title_Pilates")],
+            [InlineKeyboardButton("🤸 Stretching",      callback_data="acg_title_Stretching")],
+            [InlineKeyboardButton("🌸 Women's health",  callback_data="acg_title_Women's health")],
+            [InlineKeyboardButton("💆 MFR",             callback_data="acg_title_MFR")],
+            [InlineKeyboardButton("❌ Скасувати",       callback_data="admin_panel")],
         ]), parse_mode="HTML"
     )
 
@@ -1155,10 +1144,6 @@ async def _adm_group_show_time(query, context):
 
 
 async def _finalize_group_workout(context, reply_func):
-    """
-    Створює групове тренування та публікує анонс у канал.
-    reply_func — async callable(text, reply_markup, parse_mode) для відповіді адміну.
-    """
     title    = context.user_data.pop("new_title", "Тренування")
     date_str = context.user_data.pop("new_date", "")
     time_str = context.user_data.pop("new_time", "00:00")
@@ -1217,13 +1202,7 @@ async def _finalize_group_workout(context, reply_func):
     )
 
 
-# ── Адмін: додати ПЕРСОНАЛЬНИЙ слот ──
-# Крок 1: дата → Крок 2: час → Крок 3: лінк → Крок 4: опис → Крок 5: фото
-
 async def _finalize_personal_slot(context, reply_func):
-    """
-    Створює персональний слот та публікує анонс у канал (без Meet-лінку).
-    """
     date_str = context.user_data.pop("new_personal_date", "")
     time_str = context.user_data.pop("new_personal_time", "00:00")
     link     = context.user_data.pop("new_personal_link", "")
@@ -1274,6 +1253,7 @@ async def _finalize_personal_slot(context, reply_func):
         "HTML"
     )
 
+
 async def _adm_personal_show_calendar(query, context):
     now = datetime.now(TIMEZONE)
     cal_kb = _build_admin_calendar(now.year, now.month, cb_prefix="acp_day")
@@ -1295,8 +1275,6 @@ async def _adm_personal_show_time(query, context):
         reply_markup=InlineKeyboardMarkup(time_kb), parse_mode="HTML"
     )
 
-
-# ── Адмін: списки ──
 
 async def adm_list_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1324,7 +1302,6 @@ async def adm_list_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def adm_show_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, wid: int):
-    """Показує розгорнутий список оплативших для конкретного тренування."""
     query   = update.callback_query
     workout = wm.get(wid)
     if not workout:
@@ -1352,7 +1329,6 @@ async def adm_show_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, wid:
 
 
 async def adm_edit_time_start(update: Update, context: ContextTypes.DEFAULT_TYPE, wid: int):
-    """Крок 1: показує календар для вибору нової дати тренування."""
     query   = update.callback_query
     workout = wm.get(wid)
     if not workout:
@@ -1374,7 +1350,6 @@ async def adm_edit_time_start(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def adm_edit_time_show_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Крок 2: показує сітку годин для вибору нового часу."""
     query    = update.callback_query
     wid      = context.user_data.get("edit_wid")
     workout  = wm.get(wid) if wid else None
@@ -1429,7 +1404,7 @@ async def adm_bcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  ОБРОБНИК ТЕКСТУ (для адміна: назва, Teams-лінк, розсилка)
+#  ОБРОБНИК ТЕКСТУ
 # ═══════════════════════════════════════════════════════════════
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1445,19 +1420,15 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(user.id) or not state:
         return
 
-    # ── Групове: Google Meet-лінк (крок 4/6) → перехід до опису ──
     if state == "group_link":
         if not text.startswith("http"):
             await update.message.reply_text("⚠️ Посилання має починатися з https://"); return
-
         context.user_data["new_link"] = text
         context.user_data["adm_state"] = "group_desc"
-
         title    = context.user_data.get("new_title", "—")
         date_str = context.user_data.get("new_date", "")
         time_str = context.user_data.get("new_time", "00:00")
         d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
-
         await update.message.reply_text(
             f"🏋️➕ <b>Нове групове тренування</b> — крок 5/6\n\n"
             f"Назва: <b>{title}</b>\n📅 {d_fmt} о <b>{time_str}</b>\n"
@@ -1471,16 +1442,13 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── Групове: опис для анонсу (крок 5/6) → перехід до фото ──
     if state == "group_desc":
         context.user_data["new_desc"] = text
         context.user_data["adm_state"] = "group_photo"
-
         title    = context.user_data.get("new_title", "—")
         date_str = context.user_data.get("new_date", "")
         time_str = context.user_data.get("new_time", "00:00")
         d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
-
         await update.message.reply_text(
             f"🏋️➕ <b>Нове групове тренування</b> — крок 6/6\n\n"
             f"Назва: <b>{title}</b>\n📅 {d_fmt} о <b>{time_str}</b>\n"
@@ -1494,27 +1462,21 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── Групове: очікується фото, а не текст ──
     if state == "group_photo":
         await update.message.reply_text(
-            "📸 Надішліть <b>фото</b>, а не текст.\n"
-            "Або натисніть <b>Пропустити</b> вище ⬆️",
+            "📸 Надішліть <b>фото</b>, а не текст.\nАбо натисніть <b>Пропустити</b> вище ⬆️",
             parse_mode="HTML"
         )
         return
 
-    # ── Персональне: Google Meet-лінк (крок 3/5) → перехід до опису ──
     if state == "personal_link":
         if not text.startswith("http"):
             await update.message.reply_text("⚠️ Посилання має починатися з https://"); return
-
         context.user_data["new_personal_link"] = text
         context.user_data["adm_state"] = "personal_desc"
-
         date_str = context.user_data.get("new_personal_date", "")
         time_str = context.user_data.get("new_personal_time", "00:00")
         d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
-
         await update.message.reply_text(
             f"🧘➕ <b>Новий персональний слот</b> — крок 4/5\n\n"
             f"📅 {d_fmt} о <b>{time_str}</b>\n"
@@ -1528,15 +1490,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── Персональне: опис для анонсу (крок 4/5) → перехід до фото ──
     if state == "personal_desc":
         context.user_data["new_personal_desc"] = text
         context.user_data["adm_state"] = "personal_photo"
-
         date_str = context.user_data.get("new_personal_date", "")
         time_str = context.user_data.get("new_personal_time", "00:00")
         d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
-
         await update.message.reply_text(
             f"🧘➕ <b>Новий персональний слот</b> — крок 5/5\n\n"
             f"📅 {d_fmt} о <b>{time_str}</b>\n"
@@ -1550,16 +1509,13 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── Персональне: очікується фото, а не текст ──
     if state == "personal_photo":
         await update.message.reply_text(
-            "📸 Надішліть <b>фото</b>, а не текст.\n"
-            "Або натисніть <b>Пропустити</b> вище ⬆️",
+            "📸 Надішліть <b>фото</b>, а не текст.\nАбо натисніть <b>Пропустити</b> вище ⬆️",
             parse_mode="HTML"
         )
         return
 
-    # ── Розсилка ──
     if state == "bcast":
         context.user_data["adm_state"] = None
         all_ids = pay.all_client_ids()
@@ -1586,11 +1542,11 @@ async def cmd_add_workout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🏋️➕ <b>Нове групове тренування</b> — крок 1/6\n\nОберіть <b>назву</b>:",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🧘‍♀️ Pilates",   callback_data="acg_title_Pilates")],
-            [InlineKeyboardButton("🤸 Stretching", callback_data="acg_title_Stretching")],
-            [InlineKeyboardButton("🌸 Women's health", callback_data="acg_title_Women's health")],
-            [InlineKeyboardButton("💆 MFR",            callback_data="acg_title_MFR")],
-            [InlineKeyboardButton("❌ Скасувати",  callback_data="admin_panel")],
+            [InlineKeyboardButton("🧘‍♀️ Pilates",        callback_data="acg_title_Pilates")],
+            [InlineKeyboardButton("🤸 Stretching",      callback_data="acg_title_Stretching")],
+            [InlineKeyboardButton("🌸 Women's health",  callback_data="acg_title_Women's health")],
+            [InlineKeyboardButton("💆 MFR",             callback_data="acg_title_MFR")],
+            [InlineKeyboardButton("❌ Скасувати",       callback_data="admin_panel")],
         ]),
         parse_mode="HTML"
     )
@@ -1609,7 +1565,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "cal_ignore":
         return
 
-    # ── Навігація ──
     if data == "main_menu":
         await _edit_main_menu(update, context); return
 
@@ -1631,8 +1586,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_group_menu(update, context); return
     if data == "group_schedule":
         await show_group_schedule(update, context); return
-    if data == "group_pay_start":
-        await group_pay_start(update, context); return
+    if data.startswith("gcal_day_"):
+        parts = data.split("_")  # gcal_day_YYYY_MM_DD
+        await show_group_day_workouts(update, context, int(parts[2]), int(parts[3]), int(parts[4])); return
     if data.startswith("gpay_sel_"):
         await group_pay_details(update, context, int(data[9:])); return
 
@@ -1651,7 +1607,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("ppay_slot_"):
         await personal_pay_details(update, context, data[10:]); return
 
-    # ── Статус ──
     if data == "my_status":
         await show_my_status(update, context); return
 
@@ -1659,7 +1614,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("adm_ok_"):
         if not _is_admin(user.id):
             await query.answer("⛔", show_alert=True); return
-        parts = data.split("_")  # adm_ok_{pid}_{uid}_{item}_{type}
+        parts = data.split("_")
         client_uid = int(parts[3])
         item_id    = parts[4]
         pay_type   = parts[5] if len(parts) > 5 else "group"
@@ -1685,7 +1640,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             slot = pm.get(item_id)
             if slot:
-                # Закріплюємо слот за клієнтом після підтвердження оплати
                 pm.book(item_id, client_uid)
                 txt = (f"🎉 <b>Оплату підтверджено!</b>\n\n🧑‍🏫 Персональне\n"
                        f"📅 {_fmt_slot(slot)}\n\n🔗 {slot['teams_link']}\n\n"
@@ -1716,41 +1670,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ═══ АДМІН-ПАНЕЛЬ ═══
     if data == "admin_panel":
         if _is_admin(user.id):
             await show_admin_panel(update, context)
         return
 
-    # ── Додати групове: назва (кнопка) → календар → час → лінк ──
     if data == "adm_add_group":
         await adm_add_group_start(update, context); return
 
     if data.startswith("acg_title_"):
-        # Адмін обрав назву тренування (кнопка)
-        title = data[10:]  # "Pilates" або "Stretching"
+        title = data[10:]
         context.user_data["new_title"] = title
         context.user_data["adm_state"] = "group_cal"
         await _adm_group_show_calendar(query, context); return
 
     if data.startswith("acg_day_"):
-        # Адмін обрав день (групове)
-        parts = data.split("_")  # acg_day_YYYY_MM_DD
+        parts = data.split("_")
         date_str = f"{int(parts[2])}-{int(parts[3]):02d}-{int(parts[4]):02d}"
         context.user_data["new_date"]  = date_str
         context.user_data["adm_state"] = "group_time"
         await _adm_group_show_time(query, context); return
 
     if data.startswith("acg_time_"):
-        # Адмін обрав годину (групове) → запит лінка
         h = int(data.split("_")[-1])
         context.user_data["new_time"]  = f"{h:02d}:00"
         context.user_data["adm_state"] = "group_link"
-
         title    = context.user_data.get("new_title", "—")
         date_str = context.user_data.get("new_date", "")
         d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
-
         await query.edit_message_text(
             f"🏋️➕ <b>Нове групове тренування</b> — крок 4/6\n\n"
             f"Назва: <b>{title}</b>\n📅 {d_fmt} о <b>{h:02d}:00</b>\n\n"
@@ -1761,23 +1708,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── Групове: пропустити опис → перейти до фото ──
     if data == "acg_skip_desc":
         if not _is_admin(user.id): return
         context.user_data["new_desc"] = ""
         context.user_data["adm_state"] = "group_photo"
-
         title    = context.user_data.get("new_title", "—")
         date_str = context.user_data.get("new_date", "")
         time_str = context.user_data.get("new_time", "00:00")
         d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
-
         await query.edit_message_text(
             f"🏋️➕ <b>Нове групове тренування</b> — крок 6/6\n\n"
             f"Назва: <b>{title}</b>\n📅 {d_fmt} о <b>{time_str}</b>\n"
             f"🔗 Лінк: ✅\n📝 Опис: пропущено\n\n"
-            f"Надішліть <b>фото для анонсу</b>\n"
-            f"або натисніть <b>Пропустити</b>:",
+            f"Надішліть <b>фото для анонсу</b>\nабо натисніть <b>Пропустити</b>:",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⏭ Пропустити", callback_data="acg_skip_photo")],
                 [InlineKeyboardButton("❌ Скасувати",  callback_data="admin_panel")],
@@ -1785,24 +1728,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── Групове: пропустити фото → фіналізація ──
     if data == "acg_skip_photo":
         if not _is_admin(user.id): return
         context.user_data["new_photo"] = ""
-
         async def _reply(text, markup, pm):
             await query.edit_message_text(text, reply_markup=markup, parse_mode=pm)
         await _finalize_group_workout(context, _reply)
         return
 
-    # ── Додати персональне: календар + час ──
     if data == "adm_add_personal":
         if not _is_admin(update.effective_user.id):
             await query.answer("⛔", show_alert=True); return
         await _adm_personal_show_calendar(query, context); return
 
     if data.startswith("acp_day_"):
-        parts = data.split("_")  # acp_day_YYYY_MM_DD
+        parts = data.split("_")
         date_str = f"{int(parts[2])}-{int(parts[3]):02d}-{int(parts[4]):02d}"
         context.user_data["new_personal_date"] = date_str
         context.user_data["adm_state"] = "personal_time"
@@ -1812,10 +1752,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         h = int(data.split("_")[-1])
         context.user_data["new_personal_time"] = f"{h:02d}:00"
         context.user_data["adm_state"] = "personal_link"
-
         date_str = context.user_data.get("new_personal_date", "")
         d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
-
         await query.edit_message_text(
             f"🧘➕ <b>Новий персональний слот</b> — крок 3/5\n\n"
             f"📅 {d_fmt} о <b>{h:02d}:00</b>\n\n"
@@ -1826,22 +1764,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── Персональне: пропустити опис → перейти до фото ──
     if data == "acp_skip_desc":
         if not _is_admin(user.id): return
         context.user_data["new_personal_desc"] = ""
         context.user_data["adm_state"] = "personal_photo"
-
         date_str = context.user_data.get("new_personal_date", "")
         time_str = context.user_data.get("new_personal_time", "00:00")
         d_fmt    = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
-
         await query.edit_message_text(
             f"🧘➕ <b>Новий персональний слот</b> — крок 5/5\n\n"
             f"📅 {d_fmt} о <b>{time_str}</b>\n"
             f"🔗 Лінк: ✅\n📝 Опис: пропущено\n\n"
-            f"Надішліть <b>фото для анонсу</b>\n"
-            f"або натисніть <b>Пропустити</b>:",
+            f"Надішліть <b>фото для анонсу</b>\nабо натисніть <b>Пропустити</b>:",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⏭ Пропустити", callback_data="acp_skip_photo")],
                 [InlineKeyboardButton("❌ Скасувати",  callback_data="admin_panel")],
@@ -1849,17 +1783,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── Персональне: пропустити фото → фіналізація ──
     if data == "acp_skip_photo":
         if not _is_admin(user.id): return
         context.user_data["new_personal_photo"] = ""
-
         async def _reply_p(text, markup, pm):
             await query.edit_message_text(text, reply_markup=markup, parse_mode=pm)
         await _finalize_personal_slot(context, _reply_p)
         return
 
-    # ── Списки та видалення ──
     if data == "adm_list_group":
         await adm_list_group(update, context); return
     if data == "adm_list_personal":
@@ -1867,26 +1798,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "adm_bcast":
         await adm_bcast_start(update, context); return
 
-    # ── Показати оплативших ──
     if data.startswith("adm_paid_"):
         if not _is_admin(user.id): return
         await adm_show_paid(update, context, int(data[9:])); return
 
-    # ── Редагувати час групового тренування ──
     if data.startswith("adm_etime_"):
         if not _is_admin(user.id): return
         await adm_edit_time_start(update, context, int(data[10:])); return
 
     if data.startswith("edt_day_"):
-        # Адмін обрав нову дату
-        parts = data.split("_")  # edt_day_YYYY_MM_DD
+        parts = data.split("_")
         date_str = f"{int(parts[2])}-{int(parts[3]):02d}-{int(parts[4]):02d}"
         context.user_data["edit_new_date"] = date_str
         context.user_data["adm_state"] = "edit_group_time"
         await adm_edit_time_show_hours(update, context); return
 
     if data.startswith("edt_time_"):
-        # Адмін обрав новий час → зберігаємо та розсилаємо
         if not _is_admin(user.id): return
         h = int(data.split("_")[-1])
         wid      = context.user_data.pop("edit_wid", None)
@@ -1905,7 +1832,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         wm.update_datetime(wid, new_dt)
         new_dt_str = new_dt.strftime("%d.%m.%Y о %H:%M")
 
-        # Розсилка оплатившим про зміну часу
         paid_users = pay.get_paid_workout_ids(wid)
         sent = 0
         for uid in paid_users:
@@ -1955,7 +1881,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def notification_loop(app: Application):
     while True:
         try:
-            # ── Групові тренування ──
             for workout, ntype in wm.get_pending_notifications():
                 ids = pay.get_paid_workout_ids(workout["id"])
                 if not ids: continue
@@ -1966,8 +1891,7 @@ async def notification_loop(app: Application):
                         f"🔔 <b>Через годину — час тренування!</b>\n\n"
                         f"🏋️ <b>{workout['title']}</b>\n"
                         f"📅 {dt.strftime('%d.%m.%Y о %H:%M')}\n\n"
-                        f"Вже скоро починаємо! Підготуй зручний одяг, "
-                        f"водичку і гарний настрій 😊\n\n"
+                        f"Вже скоро починаємо! Підготуй зручний одяг, водичку і гарний настрій 😊\n\n"
                         f"🔗 <a href=\"{workout['teams_link']}\">Підключитись через Google Meet</a>\n\n"
                         f"До зустрічі! 💪🔥"
                     )
@@ -1977,11 +1901,9 @@ async def notification_loop(app: Application):
                         f"🏋️ <b>{workout['title']}</b>\n"
                         f"📅 {dt.strftime('%d.%m.%Y о %H:%M')}\n\n"
                         f"Дякуємо, що була з нами сьогодні! 🙏\n"
-                        f"Кожне тренування — це крок до кращої версії себе, "
-                        f"і ти вже на цьому шляху. Пишаємось твоєю наполегливістю! 💪\n\n"
+                        f"Кожне тренування — це крок до кращої версії себе, і ти вже на цьому шляху. Пишаємось твоєю наполегливістю! 💪\n\n"
                         f"Не забудь випити водички та трішки відпочити 😊\n\n"
-                        f"📢 <b>Слідкуй за нашими оновленнями</b> — незабаром "
-                        f"анонсуємо нові тренування! До зустрічі! 🔥"
+                        f"📢 <b>Слідкуй за нашими оновленнями</b> — незабаром анонсуємо нові тренування! До зустрічі! 🔥"
                     )
                 else:
                     txt = (
@@ -1997,9 +1919,8 @@ async def notification_loop(app: Application):
                                                    reply_markup=HOME_MARKUP, disable_web_page_preview=False)
                         await asyncio.sleep(0.05)
                     except Exception as e:
-                        logger.warning(f"notify group → {uid}: {e}")
+                        logger.warning(f"notify group -> {uid}: {e}")
 
-            # ── Персональні тренування ──
             for slot, ntype in pm.get_pending_notifications():
                 uid = slot["booked_by"]
                 if not uid: continue
@@ -2007,8 +1928,7 @@ async def notification_loop(app: Application):
                     txt = (
                         f"🔔 <b>Через годину — твоє персональне тренування!</b>\n\n"
                         f"📅 {_fmt_slot(slot)}\n\n"
-                        f"Підготуйся: зручний одяг, вода, і налаштуйся "
-                        f"на продуктивну роботу 😊\n\n"
+                        f"Підготуйся: зручний одяг, вода, і налаштуйся на продуктивну роботу 😊\n\n"
                         f"🔗 <a href=\"{slot['teams_link']}\">Підключитись через Google Meet</a>\n\n"
                         f"Тренер вже готується до заняття саме з тобою! 🤝"
                     )
@@ -2017,11 +1937,9 @@ async def notification_loop(app: Application):
                         f"🎉 <b>Персональне тренування завершено!</b>\n\n"
                         f"📅 {_fmt_slot(slot)}\n\n"
                         f"Дякуємо за сьогоднішнє заняття! 🙏\n"
-                        f"Ти чудово попрацювала — кожне тренування наближає "
-                        f"тебе до твоєї мети. Так тримати! 💪✨\n\n"
+                        f"Ти чудово попрацювала — кожне тренування наближає тебе до твоєї мети. Так тримати! 💪✨\n\n"
                         f"Не забудь відпочити та відновити сили 😊\n\n"
-                        f"📢 <b>Слідкуй за розкладом</b> — бронюй наступне "
-                        f"персональне тренування та продовжуй свій шлях до результату! 🔥"
+                        f"📢 <b>Слідкуй за розкладом</b> — бронюй наступне персональне тренування та продовжуй свій шлях до результату! 🔥"
                     )
                 else:
                     txt = (
@@ -2035,11 +1953,10 @@ async def notification_loop(app: Application):
                     await app.bot.send_message(uid, txt, parse_mode="HTML",
                                                reply_markup=HOME_MARKUP, disable_web_page_preview=False)
                 except Exception as e:
-                    logger.warning(f"notify personal → {uid}: {e}")
+                    logger.warning(f"notify personal -> {uid}: {e}")
         except Exception as e:
             logger.error(f"notification_loop: {e}")
 
-        # Завантажуємо відкладені бекапи (якщо throttle минув)
         try:
             pay._storage.flush_pending()
             wm._storage.flush_pending()
@@ -2064,7 +1981,6 @@ def run_health_server():
     HTTPServer(("0.0.0.0", port), HealthHandler).serve_forever()
 
 def main():
-    # Діагностика storage
     if not GITHUB_TOKEN:
         logger.warning("⚠️ GITHUB_TOKEN не задано! Дані зберігаються ТІЛЬКИ локально і ЗНИКНУТЬ при рестарті!")
     else:
