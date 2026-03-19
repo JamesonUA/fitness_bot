@@ -1121,6 +1121,8 @@ async def adm_add_group_start(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🧘‍♀️ Pilates",   callback_data="acg_title_Pilates")],
             [InlineKeyboardButton("🤸 Stretching", callback_data="acg_title_Stretching")],
+            [InlineKeyboardButton("🌸 Women's health", callback_data="acg_title_Women's health")],
+            [InlineKeyboardButton("💆 MFR",            callback_data="acg_title_MFR")],
             [InlineKeyboardButton("❌ Скасувати",  callback_data="admin_panel")],
         ]), parse_mode="HTML"
     )
@@ -1581,6 +1583,8 @@ async def cmd_add_workout(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🧘‍♀️ Pilates",   callback_data="acg_title_Pilates")],
             [InlineKeyboardButton("🤸 Stretching", callback_data="acg_title_Stretching")],
+            [InlineKeyboardButton("🌸 Women's health", callback_data="acg_title_Women's health")],
+            [InlineKeyboardButton("💆 MFR",            callback_data="acg_title_MFR")],
             [InlineKeyboardButton("❌ Скасувати",  callback_data="admin_panel")],
         ]),
         parse_mode="HTML"
