@@ -630,7 +630,6 @@ HOME_MARKUP = InlineKeyboardMarkup([HOME_BTN])
 REPLY_KB = ReplyKeyboardMarkup(
     [[KeyboardButton("🏠 Головне меню")]],
     resize_keyboard=True,
-    persistent=True,
 )
 
 
