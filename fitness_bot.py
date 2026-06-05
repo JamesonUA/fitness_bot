@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes
@@ -627,6 +627,11 @@ DAY_HEADERS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 
 HOME_BTN = [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")]
 HOME_MARKUP = InlineKeyboardMarkup([HOME_BTN])
+REPLY_KB = ReplyKeyboardMarkup(
+    [[KeyboardButton("🏠 Головне меню")]],
+    resize_keyboard=True,
+    persistent=True,
+)
 
 
 def _build_calendar(year: int, month: int, available_days: set[int],
@@ -720,6 +725,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if _is_admin(user.id):
         kb.append([InlineKeyboardButton("⚙️ Адмін-панель", callback_data="admin_panel")])
 
+    await update.message.reply_text(
+        "🏠", reply_markup=REPLY_KB
+    )
     await update.message.reply_text(
         f"👋 Привіт, <b>{user.first_name}</b>!\n\n"
         "Це бот онлайн-тренувань. Обери тип тренування:",
@@ -1415,9 +1423,26 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text  = update.message.text.strip()
     state = context.user_data.get("adm_state")
 
+    if text == "🏠 Головне меню":
+        context.user_data.pop("adm_state", None)
+        context.user_data.pop("waiting_screenshot", None)
+        kb = [
+            [InlineKeyboardButton("👥 Групові тренування", callback_data="group_menu")],
+            [InlineKeyboardButton("🧑‍🏫 Персональне тренування", callback_data="personal_menu")],
+            [InlineKeyboardButton("📋 Твої тренування", callback_data="my_status")],
+            [InlineKeyboardButton("📩 Зв'язок з тренером", callback_data="contact_trainer")],
+        ]
+        if _is_admin(user.id):
+            kb.append([InlineKeyboardButton("⚙️ Адмін-панель", callback_data="admin_panel")])
+        await update.message.reply_text(
+            "🏠 <b>Головне меню</b>\n\nОбери дію:",
+            reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
+        )
+        return
+
     if context.user_data.get("waiting_screenshot"):
         await update.message.reply_text("📸 Надішліть <b>фото</b>, а не текст.",
-                                       reply_markup=HOME_MARKUP, parse_mode="HTML")
+                                        reply_markup=HOME_MARKUP, parse_mode="HTML")
         return
 
     if not _is_admin(user.id) or not state:
