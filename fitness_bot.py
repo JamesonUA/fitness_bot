@@ -725,7 +725,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb.append([InlineKeyboardButton("⚙️ Адмін-панель", callback_data="admin_panel")])
 
     await update.message.reply_text(
-        "🏠", reply_markup=REPLY_KB
+        "🤸", reply_markup=REPLY_KB
     )
     await update.message.reply_text(
         f"👋 Привіт, <b>{user.first_name}</b>!\n\n"
