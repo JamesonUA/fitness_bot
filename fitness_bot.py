@@ -1062,14 +1062,17 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("✅ Підтвердити", callback_data=cb_ok),
         InlineKeyboardButton("❌ Відхилити", callback_data=f"adm_no_{payment_id}_{user.id}"),
     ]])
+    admin_messages = []
     for admin_id in ADMIN_IDS:
         try:
-            await context.bot.send_photo(
+            msg = await context.bot.send_photo(
                 chat_id=admin_id, photo=photo.file_id, caption=caption,
                 reply_markup=admin_kb, parse_mode="HTML"
             )
+            admin_messages.append({"admin_id": admin_id, "message_id": msg.message_id})
         except Exception as e:
             logger.warning(f"Не вдалось надіслати платіж адміну {admin_id}: {e}")
+    context.bot_data[f"pay_msgs_{payment_id}"] = admin_messages
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1620,11 +1623,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pay_type   = parts[5] if len(parts) > 5 else "group"
 
         pay.approve(client_uid)
+        new_caption = (query.message.caption or "") + f"\n\n✅ <b>ПІДТВЕРДЖЕНО</b> (@{user.username or user.full_name})"
         try:
-            await query.edit_message_caption(
-                caption=(query.message.caption or "") + "\n\n✅ <b>ПІДТВЕРДЖЕНО</b>", parse_mode="HTML")
+            await query.edit_message_caption(caption=new_caption, parse_mode="HTML")
         except Exception:
             pass
+        # Обновляем сообщение у остальных админов
+        admin_msgs = context.bot_data.get(f"pay_msgs_{parts[2]}", [])
+        for entry in admin_msgs:
+            if entry["admin_id"] == user.id:
+                continue
+            try:
+                await context.bot.edit_message_caption(
+                    chat_id=entry["admin_id"],
+                    message_id=entry["message_id"],
+                    caption=new_caption,
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logger.warning(f"Не вдалось оновити повідомлення адміну {entry['admin_id']}: {e}")
+        context.bot_data.pop(f"pay_msgs_{parts[2]}", None)
 
         REFUND_NOTE = "\n\n<i>⚠️ У разі пропуску оплаченого тренування з особистих причин кошти не повертаються.</i>"
 
@@ -1657,11 +1675,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = data.split("_")
         client_uid = int(parts[3])
         pay.clear_pending(client_uid)
+        new_caption = (query.message.caption or "") + f"\n\n❌ <b>ВІДХИЛЕНО</b> (@{user.username or user.full_name})"
         try:
-            await query.edit_message_caption(
-                caption=(query.message.caption or "") + "\n\n❌ <b>ВІДХИЛЕНО</b>", parse_mode="HTML")
+            await query.edit_message_caption(caption=new_caption, parse_mode="HTML")
         except Exception:
             pass
+        # Обновляем сообщение у остальных админов
+        pid_str = data.split("_")[2]
+        admin_msgs = context.bot_data.get(f"pay_msgs_{pid_str}", [])
+        for entry in admin_msgs:
+            if entry["admin_id"] == user.id:
+                continue
+            try:
+                await context.bot.edit_message_caption(
+                    chat_id=entry["admin_id"],
+                    message_id=entry["message_id"],
+                    caption=new_caption,
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logger.warning(f"Не вдалось оновити повідомлення адміну {entry['admin_id']}: {e}")
+        context.bot_data.pop(f"pay_msgs_{pid_str}", None)
         await context.bot.send_message(
             client_uid,
             "❌ <b>Платіж не підтверджено.</b>\nСпробуйте ще раз або зверніться до тренера.",
