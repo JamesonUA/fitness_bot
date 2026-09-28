@@ -46,6 +46,7 @@ GIST_ID_FILE   = ".gist_id"
 LOCAL_PAYMENTS_FILE = "fit_payments.json"
 LOCAL_WORKOUTS_FILE = "fit_workouts.json"
 LOCAL_PERSONAL_FILE = "fit_personal.json"
+LOCAL_SETTINGS_FILE = "fit_settings.json"
 
 # ═══════════════════════════════════════════════════════════════
 #  ЛОГУВАННЯ
@@ -128,6 +129,7 @@ class GistStorageManager:
                         "fit_payments.json": {"content": "{}"},
                         "fit_workouts.json": {"content": "{}"},
                         "fit_personal.json": {"content": "{}"},
+                        "fit_settings.json": {"content": "{}"},
                     }
                 },
                 timeout=30,
@@ -590,12 +592,49 @@ class PersonalManager:
 
 
 # ═══════════════════════════════════════════════════════════════
+#  МЕНЕДЖЕР НАЛАШТУВАНЬ (ціни тренувань)
+# ═══════════════════════════════════════════════════════════════
+
+class SettingsManager:
+    def __init__(self):
+        self._storage = GistStorageManager(
+            local_file=LOCAL_SETTINGS_FILE,
+            gist_filename="fit_settings.json"
+        )
+
+    def load(self):
+        global GROUP_PRICE, PERSONAL_PRICE
+        raw = self._storage.load_raw()
+        if raw:
+            GROUP_PRICE    = int(raw.get("group_price", GROUP_PRICE))
+            PERSONAL_PRICE = int(raw.get("personal_price", PERSONAL_PRICE))
+        logger.info(f"Ціни: групове={GROUP_PRICE} грн, персональне={PERSONAL_PRICE} грн")
+
+    def save(self):
+        self._storage.save_raw({
+            "group_price": GROUP_PRICE,
+            "personal_price": PERSONAL_PRICE,
+        })
+
+    def set_group_price(self, price: int):
+        global GROUP_PRICE
+        GROUP_PRICE = price
+        self.save()
+
+    def set_personal_price(self, price: int):
+        global PERSONAL_PRICE
+        PERSONAL_PRICE = price
+        self.save()
+
+
+# ═══════════════════════════════════════════════════════════════
 #  ГЛОБАЛЬНІ ЕКЗЕМПЛЯРИ
 # ═══════════════════════════════════════════════════════════════
 
-pay = PaymentManager()
-wm  = WorkoutManager()
-pm  = PersonalManager()
+pay      = PaymentManager()
+wm       = WorkoutManager()
+pm       = PersonalManager()
+settings = SettingsManager()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1106,6 +1145,7 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🏋️📋 Список групових",      callback_data="adm_list_group")],
             [InlineKeyboardButton("🧘➕ Додати персональний",   callback_data="adm_add_personal")],
             [InlineKeyboardButton("🧘📋 Список персональних",  callback_data="adm_list_personal")],
+            [InlineKeyboardButton("💰 Ціни тренувань",          callback_data="adm_prices")],
             [InlineKeyboardButton("📢 Розіслати всім",          callback_data="adm_bcast")],
             [InlineKeyboardButton("🏠 Головне меню",            callback_data="main_menu")],
         ]), parse_mode="HTML"
@@ -1399,6 +1439,41 @@ async def adm_list_personal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 
+async def show_admin_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not _is_admin(update.effective_user.id):
+        await query.answer("⛔", show_alert=True); return
+    context.user_data.pop("adm_state", None)
+    await query.edit_message_text(
+        f"💰 <b>Вартість тренувань</b>\n\n"
+        f"👥 Групове: <b>{GROUP_PRICE} грн</b>\n"
+        f"🧑‍🏫 Персональне: <b>{PERSONAL_PRICE} грн</b>\n\n"
+        f"Оберіть, що змінити:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✏️ Групове", callback_data="adm_price_group")],
+            [InlineKeyboardButton("✏️ Персональне", callback_data="adm_price_personal")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="admin_panel")],
+        ]), parse_mode="HTML"
+    )
+
+
+async def adm_price_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, kind: str):
+    query = update.callback_query
+    if not _is_admin(update.effective_user.id):
+        await query.answer("⛔", show_alert=True); return
+    context.user_data["adm_state"] = f"price_{kind}"
+    current = GROUP_PRICE if kind == "group" else PERSONAL_PRICE
+    label = "групового" if kind == "group" else "персонального"
+    await query.edit_message_text(
+        f"✏️ <b>Нова ціна {label} тренування</b>\n\n"
+        f"Поточна: <b>{current} грн</b>\n\n"
+        f"Введіть нове число (грн):",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ Скасувати", callback_data="adm_prices")
+        ]]), parse_mode="HTML"
+    )
+
+
 async def adm_bcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not _is_admin(update.effective_user.id):
@@ -1540,6 +1615,34 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "📸 Надішліть <b>фото</b>, а не текст.\nАбо натисніть <b>Пропустити</b> вище ⬆️",
             parse_mode="HTML"
+        )
+        return
+
+    if state in ("price_group", "price_personal"):
+        cleaned = text.replace(" ", "").replace(",", ".")
+        try:
+            price = int(float(cleaned))
+        except ValueError:
+            await update.message.reply_text("⚠️ Введіть коректне число, наприклад 250")
+            return
+        if price <= 0:
+            await update.message.reply_text("⚠️ Ціна має бути більшою за 0")
+            return
+
+        context.user_data["adm_state"] = None
+        if state == "price_group":
+            settings.set_group_price(price)
+            label = "Групове тренування"
+        else:
+            settings.set_personal_price(price)
+            label = "Персональне тренування"
+
+        await update.message.reply_text(
+            f"✅ <b>Ціну оновлено!</b>\n\n{label}: <b>{price} грн</b>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💰 Ціни", callback_data="adm_prices")],
+                [InlineKeyboardButton("⚙️ Панель", callback_data="admin_panel")],
+            ]), parse_mode="HTML"
         )
         return
 
@@ -1856,6 +1959,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "adm_bcast":
         await adm_bcast_start(update, context); return
 
+    if data == "adm_prices":
+        await show_admin_prices(update, context); return
+    if data == "adm_price_group":
+        await adm_price_prompt(update, context, "group"); return
+    if data == "adm_price_personal":
+        await adm_price_prompt(update, context, "personal"); return
+
     if data.startswith("adm_paid_"):
         if not _is_admin(user.id): return
         await adm_show_paid(update, context, int(data[9:])); return
@@ -2045,7 +2155,7 @@ def main():
         gist_id = os.environ.get("GIST_ID", "")
         logger.info(f"GitHub Gist storage: token=✅, GIST_ID={'✅ ' + gist_id[:8] + '...' if gist_id else '❌ (буде створено автоматично)'}")
 
-    pay.load(); wm.load(); pm.load()
+    pay.load(); wm.load(); pm.load(); settings.load()
 
     logger.info(f"Завантажено: клієнтів={len(pay.payments)}, "
                 f"групових={len(wm.workouts)}, персональних={len(pm.slots)}")

@@ -1,0 +1,20 @@
+# Секрети
+BOT_TOKEN.txt
+BASE_TOKEN.txt
+*.env
+.env
+
+# Дані бота (бекапляться у GitHub Gist)
+fit_payments.json
+fit_workouts.json
+fit_personal.json
+fit_settings.json
+.fit_pay_fid
+.fit_wrk_fid
+.gist_id
+
+# Службові файли
+__pycache__/
+*.pyc
+.idea/
+*.zip
