@@ -672,12 +672,33 @@ REPLY_KB = ReplyKeyboardMarkup(
 )
 
 
+def _calendar_nav_row(year: int, month: int, nav_prefix: str) -> list[InlineKeyboardButton]:
+    now = datetime.now(TIMEZONE)
+    prev_m = month - 1 if month > 1 else 12
+    prev_y = year if month > 1 else year - 1
+    next_m = month + 1 if month < 12 else 1
+    next_y = year if month < 12 else year + 1
+    can_prev = (year, month) > (now.year, now.month)
+    prev_btn = (
+        InlineKeyboardButton("◀️", callback_data=f"{nav_prefix}_{prev_y}_{prev_m}")
+        if can_prev else InlineKeyboardButton(" ", callback_data="cal_ignore")
+    )
+    return [
+        prev_btn,
+        InlineKeyboardButton(f"📅 {MONTH_NAMES_UK[month]} {year}", callback_data="cal_ignore"),
+        InlineKeyboardButton("▶️", callback_data=f"{nav_prefix}_{next_y}_{next_m}"),
+    ]
+
+
 def _build_calendar(year: int, month: int, available_days: set[int],
-                     cb_prefix: str) -> list[list[InlineKeyboardButton]]:
+                     cb_prefix: str, nav_prefix: str = "") -> list[list[InlineKeyboardButton]]:
     kb = []
-    kb.append([InlineKeyboardButton(
-        f"📅 {MONTH_NAMES_UK[month]} {year}", callback_data="cal_ignore"
-    )])
+    if nav_prefix:
+        kb.append(_calendar_nav_row(year, month, nav_prefix))
+    else:
+        kb.append([InlineKeyboardButton(
+            f"📅 {MONTH_NAMES_UK[month]} {year}", callback_data="cal_ignore"
+        )])
     kb.append([InlineKeyboardButton(d, callback_data="cal_ignore") for d in DAY_HEADERS])
     for week in calendar.monthcalendar(year, month):
         row = []
@@ -705,15 +726,7 @@ def _build_admin_calendar(year: int, month: int, cb_prefix: str,
             future_days.add(d)
     kb = []
     if nav_prefix:
-        prev_m = month - 1 if month > 1 else 12
-        prev_y = year if month > 1 else year - 1
-        next_m = month + 1 if month < 12 else 1
-        next_y = year if month < 12 else year + 1
-        kb.append([
-            InlineKeyboardButton("◀️", callback_data=f"{nav_prefix}_{prev_y}_{prev_m}"),
-            InlineKeyboardButton(f"📅 {MONTH_NAMES_UK[month]} {year}", callback_data="cal_ignore"),
-            InlineKeyboardButton("▶️", callback_data=f"{nav_prefix}_{next_y}_{next_m}"),
-        ])
+        kb.append(_calendar_nav_row(year, month, nav_prefix))
     else:
         kb.append([InlineKeyboardButton(
             f"📅 {MONTH_NAMES_UK[month]} {year}", callback_data="cal_ignore"
@@ -810,12 +823,14 @@ async def show_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def show_group_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_group_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                               year: int = None, month: int = None):
     query = update.callback_query
     now   = datetime.now(TIMEZONE)
-    available = wm.available_dates_in_month(now.year, now.month)
+    year  = year or now.year
+    month = month or now.month
 
-    if not available:
+    if not wm.upcoming():
         await query.edit_message_text(
             "🗓 <b>Групові тренування</b>\n\nНаразі тренувань немає. Стежте за каналом! 💪",
             reply_markup=InlineKeyboardMarkup([
@@ -824,12 +839,14 @@ async def show_group_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE
             ]), parse_mode="HTML"
         ); return
 
-    cal_kb = _build_calendar(now.year, now.month, available, cb_prefix="gcal_day")
+    available = wm.available_dates_in_month(year, month)
+    cal_kb = _build_calendar(year, month, available, cb_prefix="gcal_day", nav_prefix="gcal_nav")
     cal_kb.append([InlineKeyboardButton("◀️ Назад", callback_data="group_menu")])
     cal_kb.append([InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")])
 
+    hint = "Дні з ✅ — є тренування. Натисніть на день." if available else "У цьому місяці тренувань немає — спробуйте гортати місяці ▶️"
     await query.edit_message_text(
-        "🗓 <b>Календар групових тренувань</b>\n\nДні з ✅ — є тренування. Натисніть на день.",
+        f"🗓 <b>Календар групових тренувань</b>\n\n{hint}",
         reply_markup=InlineKeyboardMarkup(cal_kb), parse_mode="HTML"
     )
 
@@ -911,16 +928,19 @@ async def show_personal_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
-async def show_personal_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_personal_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                  year: int = None, month: int = None):
     query = update.callback_query
     now   = datetime.now(TIMEZONE)
-    available = pm.available_dates_in_month(now.year, now.month)
+    year  = year or now.year
+    month = month or now.month
+    available = pm.available_dates_in_month(year, month)
 
-    cal_kb = _build_calendar(now.year, now.month, available, cb_prefix="cal_day")
+    cal_kb = _build_calendar(year, month, available, cb_prefix="cal_day", nav_prefix="pcal_nav")
     cal_kb.append([InlineKeyboardButton("◀️ Назад", callback_data="personal_menu")])
     cal_kb.append([InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")])
 
-    hint = "Дні з ✅ — доступні. Натисніть на день." if available else "На цей місяць вільних варіантів немає."
+    hint = "Дні з ✅ — доступні. Натисніть на день." if available else "На цей місяць вільних варіантів немає — спробуйте гортати місяці ▶️"
     await query.edit_message_text(
         f"📅 <b>Запис на персональне тренування</b>\n\n{hint}",
         reply_markup=InlineKeyboardMarkup(cal_kb), parse_mode="HTML"
@@ -1168,9 +1188,11 @@ async def adm_add_group_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 
-async def _adm_group_show_calendar(query, context):
+async def _adm_group_show_calendar(query, context, year: int = None, month: int = None):
     now = datetime.now(TIMEZONE)
-    cal_kb = _build_admin_calendar(now.year, now.month, cb_prefix="acg_day")
+    year  = year or now.year
+    month = month or now.month
+    cal_kb = _build_admin_calendar(year, month, cb_prefix="acg_day", nav_prefix="acg_nav")
     cal_kb.append([InlineKeyboardButton("❌ Скасувати", callback_data="admin_panel")])
     title = context.user_data.get("new_title", "—")
     await query.edit_message_text(
@@ -1304,9 +1326,11 @@ async def _finalize_personal_slot(context, reply_func):
     )
 
 
-async def _adm_personal_show_calendar(query, context):
+async def _adm_personal_show_calendar(query, context, year: int = None, month: int = None):
     now = datetime.now(TIMEZONE)
-    cal_kb = _build_admin_calendar(now.year, now.month, cb_prefix="acp_day")
+    year  = year or now.year
+    month = month or now.month
+    cal_kb = _build_admin_calendar(year, month, cb_prefix="acp_day", nav_prefix="acp_nav")
     cal_kb.append([InlineKeyboardButton("❌ Скасувати", callback_data="admin_panel")])
     await query.edit_message_text(
         "🧘➕ <b>Новий персональний слот</b> — крок 1/5\n\nОберіть <b>дату</b>:",
@@ -1386,14 +1410,24 @@ async def adm_edit_time_start(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     context.user_data["edit_wid"] = wid
     context.user_data["adm_state"] = "edit_group_cal"
+    await _adm_edit_time_show_calendar(query, context)
 
+
+async def _adm_edit_time_show_calendar(query, context, year: int = None, month: int = None):
     now = datetime.now(TIMEZONE)
-    cal_kb = _build_admin_calendar(now.year, now.month, cb_prefix="edt_day")
+    year  = year or now.year
+    month = month or now.month
+    wid     = context.user_data.get("edit_wid")
+    workout = wm.get(wid) if wid else None
+
+    cal_kb = _build_admin_calendar(year, month, cb_prefix="edt_day", nav_prefix="edt_nav")
     cal_kb.append([InlineKeyboardButton("❌ Скасувати", callback_data="adm_list_group")])
 
+    title = workout["title"] if workout else "—"
+    cur   = _fmt_dt(workout) if workout else "—"
     await query.edit_message_text(
         f"🕐 <b>Змінити час тренування</b>\n\n"
-        f"🏋️ {workout['title']}\n📅 Поточний: <b>{_fmt_dt(workout)}</b>\n\n"
+        f"🏋️ {title}\n📅 Поточний: <b>{cur}</b>\n\n"
         "Оберіть <b>нову дату</b>:",
         reply_markup=InlineKeyboardMarkup(cal_kb), parse_mode="HTML"
     )
@@ -1716,6 +1750,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_group_menu(update, context); return
     if data == "group_schedule":
         await show_group_schedule(update, context); return
+    if data.startswith("gcal_nav_"):
+        parts = data.split("_")  # gcal_nav_YYYY_MM
+        await show_group_schedule(update, context, int(parts[2]), int(parts[3])); return
     if data.startswith("gcal_day_"):
         parts = data.split("_")  # gcal_day_YYYY_MM_DD
         await show_group_day_workouts(update, context, int(parts[2]), int(parts[3]), int(parts[4])); return
@@ -1727,6 +1764,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_personal_menu(update, context); return
     if data == "personal_calendar":
         await show_personal_calendar(update, context); return
+    if data.startswith("pcal_nav_"):
+        parts = data.split("_")  # pcal_nav_YYYY_MM
+        await show_personal_calendar(update, context, int(parts[2]), int(parts[3])); return
     if data.startswith("cal_day_"):
         _, _, y, m, d = data.split("_")
         await show_day_slots(update, context, int(y), int(m), int(d)); return
@@ -1845,6 +1885,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["adm_state"] = "group_cal"
         await _adm_group_show_calendar(query, context); return
 
+    if data.startswith("acg_nav_"):
+        if not _is_admin(user.id): return
+        parts = data.split("_")  # acg_nav_YYYY_MM
+        await _adm_group_show_calendar(query, context, int(parts[2]), int(parts[3])); return
+
     if data.startswith("acg_day_"):
         parts = data.split("_")
         date_str = f"{int(parts[2])}-{int(parts[3]):02d}-{int(parts[4]):02d}"
@@ -1901,6 +1946,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not _is_admin(update.effective_user.id):
             await query.answer("⛔", show_alert=True); return
         await _adm_personal_show_calendar(query, context); return
+
+    if data.startswith("acp_nav_"):
+        if not _is_admin(user.id): return
+        parts = data.split("_")  # acp_nav_YYYY_MM
+        await _adm_personal_show_calendar(query, context, int(parts[2]), int(parts[3])); return
 
     if data.startswith("acp_day_"):
         parts = data.split("_")
@@ -1973,6 +2023,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("adm_etime_"):
         if not _is_admin(user.id): return
         await adm_edit_time_start(update, context, int(data[10:])); return
+
+    if data.startswith("edt_nav_"):
+        if not _is_admin(user.id): return
+        parts = data.split("_")  # edt_nav_YYYY_MM
+        await _adm_edit_time_show_calendar(query, context, int(parts[2]), int(parts[3])); return
 
     if data.startswith("edt_day_"):
         parts = data.split("_")
